@@ -58,11 +58,15 @@ class _CreateGroupCommand(Command):
         self._precalculated_result = precalculated_result
 
     def execute(self) -> None:
+        """Performs the grouping operation."""
+        # The result must be pre-calculated by the background task.
         if not self._precalculated_result:
             return
 
         result = self._precalculated_result
 
+        # Pause the generator to prevent it from reacting to the storm of
+        # add/remove signals during the model mutation.
         with self.pipeline.paused():
             # Tag each selected item with the Layer it currently sits on,
             # BEFORE reparenting. Always overwrite a stale tag (e.g. an item
@@ -75,33 +79,43 @@ class _CreateGroupCommand(Command):
             self.new_group = result.new_group
             self.layer.add_child(self.new_group)
 
-            # Bulk reparenting to avoid a signal storm.
+            # --- Bulk Reparenting to Prevent Signal Storm ---
+            # 1. Group items by their original parent.
             items_by_parent = defaultdict(list)
             for item in self.items_to_group:
                 if item.parent:
                     items_by_parent[item.parent].append(item)
 
+            # 2. Remove items from old parents in batches.
             for parent, items in items_by_parent.items():
                 parent.remove_children(items)
 
+            # 3. Add all items to the new group in one batch.
             self.new_group.add_children(self.items_to_group)
 
+            # 4. Set final local matrices *after* reparenting is complete.
             for item in self.items_to_group:
                 item.matrix = result.child_matrices[item.uid]
 
     def undo(self) -> None:
+        """Reverts the grouping operation."""
         if not self.new_group:
             return
 
         with self.pipeline.paused():
+            # --- Bulk Reparenting for Undo ---
+            # 1. Remove all children from the group in one batch.
             self.new_group.remove_children(self.items_to_group)
 
+            # 2. Group items by their original parent for re-adding.
             items_by_original_parent = defaultdict(list)
             for item in self.items_to_group:
                 original_parent = self._original_parents.get(item.uid)
                 if original_parent:
                     items_by_original_parent[original_parent].append(item)
 
+            # 3. Re-add items to their original parents in batches and
+            # restore their original matrices.
             for parent, items in items_by_original_parent.items():
                 parent.add_children(items)
             for item in self.items_to_group:
@@ -115,6 +129,7 @@ class _CreateGroupCommand(Command):
                 else:
                     item.extra[ORIGIN_LAYER_UID] = previous
 
+            # 5. Finally, remove the now-empty group.
             self.layer.remove_child(self.new_group)
 
 
@@ -186,6 +201,7 @@ class _UngroupCommand(Command):
         return new_child_matrices
 
     def execute(self) -> None:
+        """Performs the ungrouping operation."""
         with self.pipeline.paused():
             for group in self.groups_to_ungroup:
                 parent = group.parent
@@ -195,7 +211,7 @@ class _UngroupCommand(Command):
                 try:
                     group_index = parent.children.index(group)
                 except ValueError:
-                    continue
+                    continue  # Should not happen
 
                 children_to_move = list(group.children)
 
@@ -206,11 +222,14 @@ class _UngroupCommand(Command):
                         group.uid
                     ]
                 else:
+                    # This path is for safety but should not be used by the
+                    # async command.
                     new_child_matrices = self._calculate_ungroup_transforms(
                         group,
                         lambda c, p=parent: self._child_targets.get(c.uid, p),
                     )
 
+                # Set new matrices before reparenting
                 for child in children_to_move:
                     child.matrix = new_child_matrices[child.uid]
 
@@ -236,6 +255,7 @@ class _UngroupCommand(Command):
                     child.extra.pop(ORIGIN_LAYER_UID, None)
 
     def undo(self) -> None:
+        """Reverts the ungrouping by re-creating the original groups."""
         with self.pipeline.paused():
             for data in reversed(self._undo_data):
                 parent = data["parent"]
@@ -260,6 +280,7 @@ class _UngroupCommand(Command):
                     else:
                         child.extra[ORIGIN_LAYER_UID] = previous
 
+                # Restore matrices first
                 group.matrix = data["group_matrix"]
                 for child in children:
                     child.matrix = data["child_matrices"][child.uid]
@@ -272,7 +293,9 @@ class _UngroupCommand(Command):
                 for actual, kids in by_actual.items():
                     actual.remove_children(kids)
 
-                group.set_children(children)
+                group.set_children(children)  # Fast, as group starts empty
+
+                # Add group back to its parent and restore its matrix
                 parent.add_child(group, index=group_index)
 
 
@@ -285,12 +308,13 @@ class GroupCmd:
 
     def group_items(self, layer: Layer, items_to_group: list[DocItem]):
         """
-        Creates and executes an undoable command to group items. This
-        operation runs as a background task.
+        Creates and executes an undoable command to group items. This operation
+        runs as a background task.
         """
         if not items_to_group:
             return
 
+        # Notify editor that we are starting a background task
         self._editor.notify_task_started()
 
         async def group_coro(context: "ExecutionContext"):
@@ -307,8 +331,8 @@ class GroupCmd:
             try:
                 if task.get_status() != "completed":
                     logger.error(
-                        "Group task did not complete successfully. "
-                        f"Status: {task.get_status()}",
+                        "Group task did not complete successfully. Status: %s",
+                        task.get_status(),
                     )
                     return
 
@@ -324,6 +348,7 @@ class GroupCmd:
                 )
                 self._editor.history_manager.execute(command)
             finally:
+                # Always notify editor when done, even on failure
                 self._editor.notify_task_ended()
 
         self._task_manager.add_coroutine(
@@ -369,6 +394,7 @@ class GroupCmd:
         if not groups_to_ungroup:
             return
 
+        # Notify editor that we are starting a background task
         self._editor.notify_task_started()
 
         def do_calculation_sync():
@@ -449,6 +475,7 @@ class GroupCmd:
                 )
                 self._editor.history_manager.execute(command)
             finally:
+                # Always notify editor when done, even on failure
                 self._editor.notify_task_ended()
 
         self._task_manager.add_coroutine(
