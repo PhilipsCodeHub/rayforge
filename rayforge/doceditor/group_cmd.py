@@ -20,6 +20,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Tag written to DocItem.extra to remember which Layer the item lived on
+# before it was swept into a cross-layer Group.
+ORIGIN_LAYER_UID = "origin_layer_uid"
+
 
 class _CreateGroupCommand(Command):
     """An undoable command to group a list of DocItems into a new Group."""
@@ -45,65 +49,72 @@ class _CreateGroupCommand(Command):
         self._original_matrices: dict[str, Matrix] = {
             item.uid: item.matrix.copy() for item in self.items_to_group
         }
+        # Snapshot the previous origin-layer tags so undo() can restore
+        # them exactly (including the "was absent" case).
+        self._previous_origin_tags: dict[str, str | None] = {
+            item.uid: item.extra.get(ORIGIN_LAYER_UID)
+            for item in self.items_to_group
+        }
         self._precalculated_result = precalculated_result
 
     def execute(self) -> None:
-        """Performs the grouping operation."""
-        # The result must be pre-calculated by the background task.
         if not self._precalculated_result:
             return
 
         result = self._precalculated_result
 
-        # Pause the generator to prevent it from reacting to the storm of
-        # add/remove signals during the model mutation.
         with self.pipeline.paused():
+            # Tag each selected item with the Layer it currently sits on,
+            # BEFORE reparenting. Always overwrite a stale tag (e.g. an item
+            # copied out of a group would otherwise carry the old uid).
+            for item in self.items_to_group:
+                owner = item.get_ancestor_by_type(Layer)
+                if owner is not None:
+                    item.extra[ORIGIN_LAYER_UID] = owner.uid
+
             self.new_group = result.new_group
             self.layer.add_child(self.new_group)
 
-            # --- Bulk Reparenting to Prevent Signal Storm ---
-            # 1. Group items by their original parent.
+            # Bulk reparenting to avoid a signal storm.
             items_by_parent = defaultdict(list)
             for item in self.items_to_group:
                 if item.parent:
                     items_by_parent[item.parent].append(item)
 
-            # 2. Remove items from old parents in batches.
             for parent, items in items_by_parent.items():
                 parent.remove_children(items)
 
-            # 3. Add all items to the new group in one batch.
             self.new_group.add_children(self.items_to_group)
 
-            # 4. Set final local matrices *after* reparenting is complete.
             for item in self.items_to_group:
                 item.matrix = result.child_matrices[item.uid]
 
     def undo(self) -> None:
-        """Reverts the grouping operation."""
         if not self.new_group:
             return
 
         with self.pipeline.paused():
-            # --- Bulk Reparenting for Undo ---
-            # 1. Remove all children from the group in one batch.
             self.new_group.remove_children(self.items_to_group)
 
-            # 2. Group items by their original parent for re-adding.
             items_by_original_parent = defaultdict(list)
             for item in self.items_to_group:
                 original_parent = self._original_parents.get(item.uid)
                 if original_parent:
                     items_by_original_parent[original_parent].append(item)
 
-            # 3. Re-add items to their original parents in batches and
-            # restore their original matrices.
             for parent, items in items_by_original_parent.items():
                 parent.add_children(items)
             for item in self.items_to_group:
                 item.matrix = self._original_matrices[item.uid]
 
-            # 5. Finally, remove the now-empty group.
+            # Restore origin-layer tags exactly.
+            for item in self.items_to_group:
+                previous = self._previous_origin_tags.get(item.uid)
+                if previous is None:
+                    item.extra.pop(ORIGIN_LAYER_UID, None)
+                else:
+                    item.extra[ORIGIN_LAYER_UID] = previous
+
             self.layer.remove_child(self.new_group)
 
 
@@ -116,11 +127,22 @@ class _UngroupCommand(Command):
         pipeline: "Pipeline",
         name: str = "Ungroup Items",
         precalculated_matrices: dict[str, dict[str, Matrix]] | None = None,
+        child_targets: dict[str, DocItem] | None = None,
     ):
         super().__init__(name)
         self.groups_to_ungroup = list(groups_to_ungroup)
         self.pipeline = pipeline
         self._precalculated_matrices = precalculated_matrices
+        # child_uid -> the parent the child should actually be moved to
+        # on execute(). If missing, the group's own parent is used.
+        self._child_targets: dict[str, DocItem] = child_targets or {}
+        # child_uid -> prior value of the origin-layer tag (None = absent).
+        self._previous_tags: dict[str, str | None] = {}
+        for group in self.groups_to_ungroup:
+            for child in group.children:
+                self._previous_tags[child.uid] = child.extra.get(
+                    ORIGIN_LAYER_UID
+                )
         self._undo_data = []
         for group in self.groups_to_ungroup:
             if group.parent:
@@ -139,23 +161,31 @@ class _UngroupCommand(Command):
 
     @staticmethod
     def _calculate_ungroup_transforms(
-        group: Group, parent_inv_world: Matrix
+        group: Group,
+        target_for,
     ) -> dict[str, Matrix]:
         """
-        Calculates the new local matrices for a group's children using a
-        pre-calculated parent inverse transform.
+        Calculate new local matrices for a group's children, using the
+        inverse world transform of each child's *actual* target parent.
+
+        ``target_for(child)`` must return the parent the child will land on.
         """
         group_world_transform = group.get_world_transform()
-        new_child_matrices = {}
+        inverse_cache: dict[str, Matrix] = {}
+        new_child_matrices: dict[str, Matrix] = {}
         for child in group.children:
+            target = target_for(child)
+            if target.uid not in inverse_cache:
+                inverse_cache[target.uid] = (
+                    target.get_world_transform().invert()
+                )
             child_world_transform = group_world_transform @ child.matrix
             new_child_matrices[child.uid] = (
-                parent_inv_world @ child_world_transform
+                inverse_cache[target.uid] @ child_world_transform
             )
         return new_child_matrices
 
     def execute(self) -> None:
-        """Performs the ungrouping operation."""
         with self.pipeline.paused():
             for group in self.groups_to_ungroup:
                 parent = group.parent
@@ -165,7 +195,7 @@ class _UngroupCommand(Command):
                 try:
                     group_index = parent.children.index(group)
                 except ValueError:
-                    continue  # Should not happen
+                    continue
 
                 children_to_move = list(group.children)
 
@@ -176,24 +206,36 @@ class _UngroupCommand(Command):
                         group.uid
                     ]
                 else:
-                    # This path is for safety but should not be used by the
-                    # async command.
-                    parent_inv = parent.get_world_transform().invert()
-                    new_child_matrices = (
-                        _UngroupCommand._calculate_ungroup_transforms(
-                            group, parent_inv
-                        )
+                    new_child_matrices = self._calculate_ungroup_transforms(
+                        group,
+                        lambda c, p=parent: self._child_targets.get(c.uid, p),
                     )
 
-                # Set new matrices before reparenting
                 for child in children_to_move:
                     child.matrix = new_child_matrices[child.uid]
 
                 parent.remove_child(group)
-                parent.add_children(children_to_move, index=group_index)
+
+                # Route each child to its target parent. Children that
+                # share a target are added in one batch; children that
+                # stay on the original parent keep the group's former
+                # index, matching today's behavior.
+                by_target: dict[DocItem, list[DocItem]] = defaultdict(list)
+                for child in children_to_move:
+                    target = self._child_targets.get(child.uid, parent)
+                    by_target[target].append(child)
+
+                for target, kids in by_target.items():
+                    if target is parent:
+                        target.add_children(kids, index=group_index)
+                    else:
+                        target.add_children(kids)
+
+                # The tag has served its purpose.
+                for child in children_to_move:
+                    child.extra.pop(ORIGIN_LAYER_UID, None)
 
     def undo(self) -> None:
-        """Reverts the ungrouping by re-creating the original groups."""
         with self.pipeline.paused():
             for data in reversed(self._undo_data):
                 parent = data["parent"]
@@ -210,16 +252,27 @@ class _UngroupCommand(Command):
                 if not group:
                     continue
 
-                # Restore matrices first
+                # Restore tags before moving anything.
+                for child in children:
+                    previous = self._previous_tags.get(child.uid)
+                    if previous is None:
+                        child.extra.pop(ORIGIN_LAYER_UID, None)
+                    else:
+                        child.extra[ORIGIN_LAYER_UID] = previous
+
                 group.matrix = data["group_matrix"]
                 for child in children:
                     child.matrix = data["child_matrices"][child.uid]
 
-                # Move children from parent back into the group
-                parent.remove_children(children)
-                group.set_children(children)  # Fast, as group starts empty
+                # Remove each child from the parent it actually went to.
+                by_actual: dict[DocItem, list[DocItem]] = defaultdict(list)
+                for child in children:
+                    actual = self._child_targets.get(child.uid, parent)
+                    by_actual[actual].append(child)
+                for actual, kids in by_actual.items():
+                    actual.remove_children(kids)
 
-                # Add group back to its parent and restore its matrix
+                group.set_children(children)
                 parent.add_child(group, index=group_index)
 
 
@@ -232,13 +285,12 @@ class GroupCmd:
 
     def group_items(self, layer: Layer, items_to_group: list[DocItem]):
         """
-        Creates and executes an undoable command to group items. This operation
-        runs as a background task.
+        Creates and executes an undoable command to group items. This
+        operation runs as a background task.
         """
         if not items_to_group:
             return
 
-        # Notify editor that we are starting a background task
         self._editor.notify_task_started()
 
         async def group_coro(context: "ExecutionContext"):
@@ -255,8 +307,8 @@ class GroupCmd:
             try:
                 if task.get_status() != "completed":
                     logger.error(
-                        "Group task did not complete successfully. Status: %s",
-                        task.get_status(),
+                        "Group task did not complete successfully. "
+                        f"Status: {task.get_status()}",
                     )
                     return
 
@@ -272,7 +324,6 @@ class GroupCmd:
                 )
                 self._editor.history_manager.execute(command)
             finally:
-                # Always notify editor when done, even on failure
                 self._editor.notify_task_ended()
 
         self._task_manager.add_coroutine(
@@ -280,6 +331,35 @@ class GroupCmd:
             when_done=when_done,
             key="group-items",
         )
+
+    def _find_layer_by_uid(self, uid: str, anchor: DocItem) -> Layer | None:
+        """
+        Locate a Layer by uid.
+
+        Walks up from ``anchor`` to the topmost ancestor and then DFSes
+        the tree. This assumes layers share a common root in the
+        document model.
+
+        TODO(reviewer): if the document exposes a layer registry, use it
+        here instead. This tree walk is a proof-of-concept shortcut.
+        """
+        node = anchor
+        seen_up: set[str] = set()
+        while node.parent is not None and node.uid not in seen_up:
+            seen_up.add(node.uid)
+            node = node.parent
+        stack = [node]
+        seen_down: set[str] = set()
+        while stack:
+            cur = stack.pop()
+            if cur.uid in seen_down:
+                continue
+            seen_down.add(cur.uid)
+            if isinstance(cur, Layer) and cur.uid == uid:
+                return cur
+            for child in getattr(cur, "children", []) or []:
+                stack.append(child)
+        return None
 
     def ungroup_items(self, groups_to_ungroup: list[Group]):
         """
@@ -289,38 +369,63 @@ class GroupCmd:
         if not groups_to_ungroup:
             return
 
-        # Notify editor that we are starting a background task
         self._editor.notify_task_started()
 
-        def do_calculation_sync() -> dict[str, dict[str, Matrix]]:
-            results = {}
-            parent_inverses: dict[str, Matrix] = {}
+        def do_calculation_sync():
+            # Decide where each child should land.
+            child_targets: dict[str, DocItem] = {}
             for group in groups_to_ungroup:
-                if group.parent and group.parent.uid not in parent_inverses:
-                    parent_inverses[group.parent.uid] = (
-                        group.parent.get_world_transform().invert()
-                    )
+                parent = group.parent
+                if not parent:
+                    continue
+                if not isinstance(parent, Layer):
+                    # Nested group: keep today's behavior.
+                    for child in group.children:
+                        child_targets[child.uid] = parent
+                    continue
+                for child in group.children:
+                    uid = child.extra.get(ORIGIN_LAYER_UID)
+                    target = parent
+                    if uid:
+                        origin = self._find_layer_by_uid(uid, parent)
+                        if origin is not None:
+                            target = origin
+                        else:
+                            logger.warning(
+                                "Ungroup: origin layer uid=%s not found "
+                                "for item uid=%s; falling back to the "
+                                "group's parent.",
+                                uid,
+                                child.uid,
+                            )
+                    child_targets[child.uid] = target
 
+            # Compute new local matrices using per-child target inverses.
+            results: dict[str, dict[str, Matrix]] = {}
             for group in groups_to_ungroup:
-                if group.parent:
-                    parent_inv = parent_inverses[group.parent.uid]
-                    new_matrices = (
-                        _UngroupCommand._calculate_ungroup_transforms(
-                            group, parent_inv
-                        )
+                if not group.parent:
+                    continue
+                parent = group.parent
+
+                def target_for(child, p=parent, t=child_targets):
+                    return t.get(child.uid, p)
+
+                results[group.uid] = (
+                    _UngroupCommand._calculate_ungroup_transforms(
+                        group, target_for
                     )
-                    results[group.uid] = new_matrices
-            return results
+                )
+            return child_targets, results
 
         async def ungroup_coro(context: "ExecutionContext"):
             context.set_message(_("Ungrouping items..."))
             context.flush()
             await asyncio.sleep(0.01)
 
-            calculated_matrices = do_calculation_sync()
+            child_targets, matrices = do_calculation_sync()
 
             context.set_progress(1.0)
-            return calculated_matrices
+            return child_targets, matrices
 
         def when_done(task: "Task"):
             try:
@@ -331,18 +436,19 @@ class GroupCmd:
                     )
                     return
 
-                calculated_matrices = task.result()
-                if not calculated_matrices:
+                result = task.result()
+                if not result:
                     return
+                child_targets, calculated_matrices = result
 
                 command = _UngroupCommand(
                     groups_to_ungroup=groups_to_ungroup,
                     pipeline=self._editor.pipeline,
                     precalculated_matrices=calculated_matrices,
+                    child_targets=child_targets,
                 )
                 self._editor.history_manager.execute(command)
             finally:
-                # Always notify editor when done, even on failure
                 self._editor.notify_task_ended()
 
         self._task_manager.add_coroutine(

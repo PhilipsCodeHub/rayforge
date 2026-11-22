@@ -2,7 +2,7 @@ import logging
 from collections.abc import Callable
 from gettext import gettext as _
 from gettext import ngettext
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from gi.repository import Adw, Gio, GLib, Gtk
 
@@ -846,12 +846,17 @@ class ActionManager:
             for elem in selected_elements
             if isinstance(elem.data, DocItem)
         ]
-        # All items must belong to the same layer to be grouped
-        parent_layer = cast(Layer, items_to_group[0].parent)
-        if not parent_layer or not all(
-            item.parent is parent_layer for item in items_to_group
-        ):
+
+        # Resolve every selected item's owning Layer. Cross-layer grouping
+        # is permitted here; the new group is placed on the first item's
+        # layer, and ungroup restores each item to its original layer via
+        # the origin_layer_uid tag.
+        parent_layers = [
+            item.get_ancestor_by_type(Layer) for item in items_to_group
+        ]
+        if any(pl is None for pl in parent_layers):
             return
+        parent_layer = parent_layers[0]
 
         new_group = self.editor.group.group_items(parent_layer, items_to_group)
         if new_group:
