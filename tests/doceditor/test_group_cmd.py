@@ -100,7 +100,7 @@ async def test_regroup_overwrites_stale_tag(doc_editor, two_layers_with_items):
     # item_b's tag was removed on ungroup; regroup should re-tag with
     # whatever its current layer is.
     doc_editor.group.group_items(layer_a, [item_a, item_b])
-    await wait_for_grouping(doc_editor)   
+    await wait_for_grouping(doc_editor)
     assert item_b.extra["origin_layer_uid"] == layer_b.uid
 
 
