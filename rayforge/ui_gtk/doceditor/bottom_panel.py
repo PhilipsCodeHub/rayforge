@@ -13,6 +13,7 @@ from ...machine.cmd import MachineCmd
 from ...machine.models.machine import Machine
 from ...shared.gcodeedit.viewer import GcodeViewer
 from ...shared.tasker import task_mgr
+from ..doceditor.groups_tab import GroupsTab
 from ..doceditor.layers_tab import LayersTab
 from ..icons import get_icon
 from ..machine.console import Console
@@ -166,6 +167,10 @@ class BottomPanel(Gtk.Box):
         self.layers_tab.edit_item_requested.connect(
             self._on_layers_tab_edit_item
         )
+        self.groups_tab = GroupsTab(doc_editor)
+        self.groups_tab.select_items_requested.connect(
+            self._on_layers_tab_select_items
+        )
         self.layers_tab.select_items_requested.connect(
             self._on_layers_tab_select_items
         )
@@ -270,6 +275,14 @@ class BottomPanel(Gtk.Box):
         )
         self.dock_layout.register_item(
             DockItem(
+                name="groups",
+                icon_name="group-symbolic",
+                widget=self.groups_tab,
+                label=_("Groups"),
+            )
+        )
+        self.dock_layout.register_item(
+            DockItem(
                 name="controls",
                 icon_name="jog-symbolic",
                 widget=self._controls_widget,
@@ -293,12 +306,14 @@ class BottomPanel(Gtk.Box):
         tabs_area.add_item(self.dock_layout.get_item("assets"))
         tabs_area.add_item(self.dock_layout.get_item("gcode"))
         tabs_area.add_item(self.dock_layout.get_item("console"))
+        tabs_area.add_item(self.dock_layout.get_item("groups"))
 
         controls_area = self.dock_layout.add_area()
         controls_area.add_item(self.dock_layout.get_item("controls"))
         controls_area.add_item(self.dock_layout.get_item("laser"))
 
         self.dock_layout.set_default_item_buddy("laser", "controls")
+        self.dock_layout.set_default_item_buddy("groups", "layers")
 
     def to_dict(self):
         return {
@@ -333,6 +348,7 @@ class BottomPanel(Gtk.Box):
         self.doc = doc
         self.asset_browser.set_doc(doc)
         self.layers_tab.set_doc(doc)
+        self.groups_tab.set_doc(doc)
         if doc:
             doc.active_layer_changed.connect(self._on_active_layer_changed)
             self._connect_layer_signals()
@@ -347,6 +363,7 @@ class BottomPanel(Gtk.Box):
 
     def update_layer_selection(self, selected_uids: set):
         self.layers_tab.update_row_selection(selected_uids)
+        self.groups_tab.update_row_selection(selected_uids)
 
     def _on_active_layer_changed(self, sender):
         self._disconnect_layer_signals()
