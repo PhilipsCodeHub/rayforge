@@ -42,6 +42,9 @@ _CSS = """
 # Indentation per nesting level, in pixels.
 _INDENT = 12
 
+# Extra indentation of the item lines below an expanded group.
+_CHILD_INDENT = 46
+
 # Written by feature/preserve-layer-on-group (group_cmd.ORIGIN_LAYER_UID)
 # into each grouped child's `extra` dict. Kept as a literal on purpose:
 # the constant does not exist on main, so importing it would break there.
@@ -68,6 +71,7 @@ class GroupState(NamedTuple):
     origin_names: tuple[str, ...]
     has_visibility: bool
     visible: bool
+    child_names: tuple[str, ...]
 
 
 def _iter_groups(item, depth: int = 0) -> Iterator[tuple[Group, int]]:
@@ -127,6 +131,9 @@ def get_group_state(group: Group, layers_by_uid: dict) -> GroupState:
         # toggle stays hidden until the model provides one.
         has_visibility=hasattr(group, "visible"),
         visible=bool(getattr(group, "visible", True)),
+        child_names=tuple(
+            child.name or _("Item") for child in group.children
+        ),
     )
 
 
@@ -147,15 +154,45 @@ def set_group_visible(editor: "DocEditor", group: Group, visible: bool):
 
 
 class GroupListRow(Gtk.ListBoxRow):
-    def __init__(self, tab: "GroupsTab", group: Group, depth: int):
+    def __init__(
+        self, tab: "GroupsTab", group: Group, depth: int, expanded: bool
+    ):
         super().__init__()
         self._tab = tab
         self.group = group
         self._state: GroupState | None = None
+        self._expanded = False
+        self._built_names: tuple[str, ...] | None = None
+
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.set_child(outer)
 
         box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=9)
         box.set_margin_start(_INDENT * depth)
-        self.set_child(box)
+        outer.append(box)
+
+        # Lines with the names of the group's items, below the group line.
+        self.children_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.children_box.set_margin_start(_INDENT * depth + _CHILD_INDENT)
+        self.children_box.set_margin_end(6)
+        self.children_box.set_margin_bottom(4)
+        self.revealer = Gtk.Revealer()
+        self.revealer.set_transition_type(
+            Gtk.RevealerTransitionType.SLIDE_DOWN
+        )
+        self.revealer.set_child(self.children_box)
+        outer.append(self.revealer)
+
+        self.expand_button = Gtk.ToggleButton()
+        self.expand_button.add_css_class("flat")
+        self.expand_button.set_valign(Gtk.Align.CENTER)
+        self.expand_button.set_tooltip_text(_("Show items"))
+        self._arrow_label = Gtk.Label()
+        self.expand_button.set_child(self._arrow_label)
+        self._expand_handler_id = self.expand_button.connect(
+            "toggled", self._on_expand_toggled
+        )
+        box.append(self.expand_button)
 
         self.vis_button = Gtk.ToggleButton()
         self.vis_button.add_css_class("flat")
@@ -195,6 +232,11 @@ class GroupListRow(Gtk.ListBoxRow):
         right_click.connect("pressed", self._on_right_pressed)
         self.add_controller(right_click)
 
+        self.expand_button.handler_block(self._expand_handler_id)
+        self.expand_button.set_active(expanded)
+        self.expand_button.handler_unblock(self._expand_handler_id)
+        self._apply_expanded(expanded)
+
     def apply(self, state: GroupState):
         """Updates the widgets, but only if the displayed data changed."""
         if state == self._state:
@@ -228,6 +270,45 @@ class GroupListRow(Gtk.ListBoxRow):
             )
         )
         self.set_opacity(1.0 if state.visible else 0.5)
+
+        self.expand_button.set_sensitive(bool(state.child_names))
+        if self._expanded:
+            self._rebuild_children()
+
+    def _on_expand_toggled(self, button):
+        expanded = button.get_active()
+        self._tab.set_group_expanded(self.group, expanded)
+        self._apply_expanded(expanded)
+
+    def _apply_expanded(self, expanded: bool):
+        self._expanded = expanded
+        self._arrow_label.set_label("\u25be" if expanded else "\u25b8")
+        self.revealer.set_reveal_child(expanded)
+        if expanded and self._state is not None:
+            self._rebuild_children()
+
+    def _rebuild_children(self):
+        """Fills the item lines. Only done for expanded groups."""
+        if self._state is None:
+            return
+        names = self._state.child_names
+        if names == self._built_names:
+            return
+        self._built_names = names
+
+        child = self.children_box.get_first_child()
+        while child:
+            next_child = child.get_next_sibling()
+            self.children_box.remove(child)
+            child = next_child
+
+        for name in names:
+            label = Gtk.Label(label=name, xalign=0)
+            label.add_css_class("caption")
+            label.set_ellipsize(Pango.EllipsizeMode.END)
+            label.set_margin_top(2)
+            label.set_margin_bottom(2)
+            self.children_box.append(label)
 
     def set_selected(self, selected: bool):
         if selected:
@@ -268,6 +349,7 @@ class GroupsTab(Gtk.Box):
         self._context_popover: Gtk.PopoverMenu | None = None
         self._context_group: Group | None = None
         self._pending_rename: Group | None = None
+        self._expanded_uids: set = set()
 
         self.select_items_requested = Signal()
 
@@ -339,6 +421,12 @@ class GroupsTab(Gtk.Box):
 
     def rename_group(self, group: Group, new_name: str):
         set_group_name(self.editor, group, new_name)
+
+    def set_group_expanded(self, group: Group, expanded: bool):
+        if expanded:
+            self._expanded_uids.add(group.uid)
+        else:
+            self._expanded_uids.discard(group.uid)
 
     def select_group(self, group: Group):
         self.select_items_requested.send(
@@ -458,7 +546,9 @@ class GroupsTab(Gtk.Box):
         self._rows.clear()
 
         for group, depth in entries:
-            row = GroupListRow(self, group, depth)
+            row = GroupListRow(
+                self, group, depth, group.uid in self._expanded_uids
+            )
             row.set_selected(group.uid in self._selected_uids)
             self._rows.append(row)
             self.listbox.append(row)
