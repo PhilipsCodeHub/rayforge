@@ -19,6 +19,44 @@ class GroupBatch:
     by_layer: list[tuple[Layer, list[WorkPiece]]]
 
 
+def _top_groups_by_uid(doc: Doc) -> dict[str, Group]:
+    """Top-level groups (direct children of a layer), in document order."""
+    top_groups: dict[str, Group] = {}
+    for layer in doc.layers:
+        for child in layer.children:
+            if isinstance(child, Group):
+                top_groups[child.uid] = child
+    return top_groups
+
+
+def _ordered_uids(listed: list[str], top_groups: dict[str, Group]) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for uid in listed:
+        if uid in top_groups and uid not in seen:
+            ordered.append(uid)
+            seen.add(uid)
+    for uid in top_groups:
+        if uid not in seen:
+            ordered.append(uid)
+            seen.add(uid)
+    return ordered
+
+
+def top_level_groups(doc: Doc) -> list[Group]:
+    """Top-level groups (direct children of a layer), in document order."""
+    return list(_top_groups_by_uid(doc).values())
+
+
+def effective_group_order(doc: Doc) -> list[str]:
+    """
+    UIDs of the top-level groups in execution order: those listed in
+    doc.group_execution_order first, then the missing ones in document
+    order. Stale and duplicate UIDs are ignored.
+    """
+    return _ordered_uids(doc.group_execution_order, _top_groups_by_uid(doc))
+
+
 def resolve_group_batches(doc: Doc) -> list[GroupBatch]:
     """
     Returns execution batches for group-based G-code ordering:
@@ -30,23 +68,8 @@ def resolve_group_batches(doc: Doc) -> list[GroupBatch]:
     layers = list(doc.layers)
     layer_index = {layer.uid: i for i, layer in enumerate(layers)}
 
-    # Top-level groups in document order.
-    top_groups: dict[str, Group] = {}
-    for layer in layers:
-        for child in layer.children:
-            if isinstance(child, Group):
-                top_groups[child.uid] = child
-
-    ordered: list[str] = []
-    seen: set[str] = set()
-    for uid in doc.group_execution_order:
-        if uid in top_groups and uid not in seen:
-            ordered.append(uid)
-            seen.add(uid)
-    for uid in top_groups:
-        if uid not in seen:
-            ordered.append(uid)
-            seen.add(uid)
+    top_groups = _top_groups_by_uid(doc)
+    ordered = _ordered_uids(doc.group_execution_order, top_groups)
 
     batches: list[GroupBatch] = []
     for uid in ordered:
