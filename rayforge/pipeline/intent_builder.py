@@ -103,6 +103,8 @@ logger = logging.getLogger(__name__)
 # reattachment map (see IntentController) always agree.
 WORKPIECE_KEY_FMT = "workpiece:{wp_uid}:{step_uid}"
 STEP_KEY_FMT = "step:{step_uid}"
+GROUP_STEP_KEY_FMT = "stepgroup:{step_uid}:{group_uid}"
+UNGROUPED_UID = "_ungrouped"
 COMMAND_KEY_FMT = "command:{step_uid}"
 JOB_KEY = "job"
 JOB_ENCODE_KEY = "job:encode"
@@ -155,6 +157,23 @@ def step_key(step_uid: str) -> str:
     return STEP_KEY_FMT.format(step_uid=step_uid)
 
 
+def group_step_key(step_uid: str, group_uid: str | None) -> str:
+    """Aggregate key for one step restricted to one group's workpieces."""
+    return GROUP_STEP_KEY_FMT.format(
+        step_uid=step_uid, group_uid=group_uid or UNGROUPED_UID
+    )
+
+
+def parse_group_step_key(key: str) -> tuple[str, str] | None:
+    """Parse ``stepgroup:{step_uid}:{group_uid}`` to (step, group)."""
+    if not key.startswith("stepgroup:"):
+        return None
+    parts = key[len("stepgroup:") :].split(":")
+    if len(parts) != 2 or not all(parts):
+        return None
+    return (parts[0], parts[1])
+
+
 def command_key(step_uid: str) -> str:
     """The compute node key of a geometry-less (workpiece-free) step."""
     return COMMAND_KEY_FMT.format(step_uid=step_uid)
@@ -204,10 +223,12 @@ class IntentBuilder:
         machine: Machine,
         generation_id: int = 0,
         loop: asyncio.AbstractEventLoop | None = None,
+        group_gcode_order: bool = False,
     ):
         self._machine = machine
         self._generation_id = generation_id
         self._loop = loop
+        self._group_gcode_order = group_gcode_order
         self._doc: Doc | None = None
 
     @property
