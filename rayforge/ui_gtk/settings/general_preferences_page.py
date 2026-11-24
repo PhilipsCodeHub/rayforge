@@ -304,6 +304,18 @@ class GeneralPreferencesPage(TrackedPreferencesPage):
         )
         startup_group.add(self.auto_pipeline_row)
 
+        self.group_gcode_order_row = Adw.SwitchRow(
+            title=_("Group-based G-code order"),
+            subtitle=_(
+                "Generate G-code by group order instead of layer order"
+            ),
+        )
+        self.group_gcode_order_row.set_active(config.group_gcode_order)
+        self.group_gcode_order_row.connect(
+            "notify::active", self.on_group_gcode_order_changed
+        )
+        startup_group.add(self.group_gcode_order_row)
+
         self.cache_budget_row = SpinRow(
             _("Cache budget (MB)"),
             _("Maximum memory for cache. High complexity scenes require more"),
@@ -668,3 +680,8 @@ class GeneralPreferencesPage(TrackedPreferencesPage):
         """Called when the user toggles sleep prevention during jobs."""
         enabled = switch_row.get_active()
         get_context().config.set_prevent_sleep_while_working(enabled)
+
+    def on_group_gcode_order_changed(self, switch_row, _):
+        """Called when the user toggles group-based G-code ordering."""
+        enabled = switch_row.get_active()
+        get_context().config.set_group_gcode_order(enabled)

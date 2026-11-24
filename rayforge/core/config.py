@@ -115,6 +115,8 @@ class Config:
         self.watch_source_files: bool = True
         # Whether to prevent automatic system sleep while a job runs.
         self.prevent_sleep_while_working: bool = True
+        # Whether G-code operations are ordered by group.
+        self.group_gcode_order: bool = False
         # Usage tracking consent date: None = not asked, "" = declined,
         # ISO date string = consent given on that date
         self.usage_consent_date: str | None = None
@@ -288,6 +290,13 @@ class Config:
         self.prevent_sleep_while_working = enabled
         self.changed.send(self)
 
+    def set_group_gcode_order(self, enabled: bool):
+        """Sets whether G-code operations are ordered by group."""
+        if self.group_gcode_order == enabled:
+            return
+        self.group_gcode_order = enabled
+        self.changed.send(self)
+
     def set_ops_color_mode(self, mode: OpsColorMode):
         """Sets the ops color mode."""
         if self.ops_color_mode == mode:
@@ -417,6 +426,7 @@ class Config:
             ),
             "watch_source_files": self.watch_source_files,
             "prevent_sleep_while_working": self.prevent_sleep_while_working,
+            "group_gcode_order": self.group_gcode_order,
             "ops_color_mode": self.ops_color_mode.value,
             "usage_consent_date": self.usage_consent_date,
             "import_dpi": self.import_dpi,
@@ -500,6 +510,7 @@ class Config:
         config.prevent_sleep_while_working = data.get(
             "prevent_sleep_while_working", True
         )
+        config.group_gcode_order = data.get("group_gcode_order", False)
 
         ops_color_mode_str = data.get(
             "ops_color_mode", OpsColorMode.LASER.value
