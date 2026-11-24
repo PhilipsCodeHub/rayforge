@@ -5,6 +5,10 @@ Shows one row per group: optional visibility toggle, editable name,
 child count, current layer and (optionally) the layer(s) the group's
 elements were preserved from.
 
+Top-level groups are listed in their G-code execution order (see
+pipeline/group_order.py) with up/down buttons to change it. Nested
+groups follow their parent and have no order controls.
+
 All access to the document model is isolated in the "adapter" section
 below, so that the widgets do not change when the model changes, the
 "preserved from" information is optional (it only exists on
@@ -21,9 +25,14 @@ from typing import TYPE_CHECKING, NamedTuple
 from blinker import Signal
 from gi.repository import Gdk, Gio, GLib, Gtk, Pango
 
+from ...context import get_context
 from ...core.doc import Doc
 from ...core.group import Group
 from ...core.workpiece import WorkPiece
+from ...pipeline.group_order import (
+    effective_group_order,
+    top_level_groups,
+)
 from ..icons import get_icon
 from ..shared.gtk import apply_css
 from .group_row import GroupRow
@@ -72,6 +81,9 @@ class GroupState(NamedTuple):
     has_visibility: bool
     visible: bool
     child_names: tuple[str, ...]
+    # 1-based position among the top-level groups; 0 = not top-level.
+    order_position: int = 0
+    order_count: int = 0
 
 
 def _iter_groups(item, depth: int = 0) -> Iterator[tuple[Group, int]]:
@@ -87,11 +99,17 @@ def get_ordered_groups(doc: Doc) -> list[tuple[Group, int]]:
     """
     Returns (group, nesting depth) in display order.
 
-    Currently: document traversal order, groups at all depths. To list
-    only top-level groups (like the Layers panel), keep depth == 0.
-    When the group-ordering feature exists, change only this function.
+    Top-level groups come first-to-last in their G-code execution order
+    (the same order the pipeline uses), each followed by its nested
+    groups in child order.
     """
-    return list(_iter_groups(doc))
+    by_uid = {g.uid: g for g in top_level_groups(doc)}
+    entries: list[tuple[Group, int]] = []
+    for uid in effective_group_order(doc):
+        group = by_uid[uid]
+        entries.append((group, 0))
+        entries.extend(_iter_groups(group, 1))
+    return entries
 
 
 def _layer_name(layer) -> str:
@@ -118,7 +136,12 @@ def group_origin_layers(group: Group, layers_by_uid: dict) -> list:
     return origins
 
 
-def get_group_state(group: Group, layers_by_uid: dict) -> GroupState:
+def get_group_state(
+    group: Group,
+    layers_by_uid: dict,
+    order_position: int = 0,
+    order_count: int = 0,
+) -> GroupState:
     return GroupState(
         name=group.name or _("Group"),
         child_count=len(group.children),
@@ -134,6 +157,8 @@ def get_group_state(group: Group, layers_by_uid: dict) -> GroupState:
         child_names=tuple(
             child.name or _("Item") for child in group.children
         ),
+        order_position=order_position,
+        order_count=order_count,
     )
 
 
@@ -146,6 +171,17 @@ def set_group_visible(editor: "DocEditor", group: Group, visible: bool):
     # TODO: replace with an undoable command, like
     # editor.layer.set_layer_visibility, once groups can be hidden.
     group.visible = visible
+
+
+def set_group_order(doc: Doc, uids: list[str]):
+    # Sends job_assembly_invalidated, so the pipeline rebuilds.
+    # TODO: make this undoable (a command like rename_item).
+    doc.set_group_execution_order(uids)
+
+
+def is_group_order_enabled() -> bool:
+    """The app-wide "Group-based G-code order" setting."""
+    return bool(get_context().config.group_gcode_order)
 
 
 # --------------------------------------------------------------------------
@@ -203,6 +239,14 @@ class GroupListRow(Gtk.ListBoxRow):
         )
         box.append(self.vis_button)
 
+        # Position in the G-code execution order (top-level groups only).
+        self.order_label = Gtk.Label()
+        self.order_label.add_css_class("dim-label")
+        self.order_label.set_width_chars(2)
+        self.order_label.set_xalign(1.0)
+        self.order_label.set_tooltip_text(_("Position in the group order"))
+        box.append(self.order_label)
+
         # Reuse the Layers panel row: it provides in-place rename
         # (double-click, Enter, Escape, focus-out, click-outside).
         self.group_row = GroupRow(group, on_rename=tab.rename_group)
@@ -221,6 +265,22 @@ class GroupListRow(Gtk.ListBoxRow):
         self.origin_label.add_css_class("dim-label")
         self.origin_label.set_ellipsize(Pango.EllipsizeMode.END)
         box.append(self.origin_label)
+
+        self.up_button = Gtk.Button()
+        self.up_button.add_css_class("flat")
+        self.up_button.set_valign(Gtk.Align.CENTER)
+        self.up_button.set_child(Gtk.Label(label="\u25b2"))
+        self.up_button.set_tooltip_text(_("Run this group earlier"))
+        self.up_button.connect("clicked", self._on_move_up)
+        box.append(self.up_button)
+
+        self.down_button = Gtk.Button()
+        self.down_button.add_css_class("flat")
+        self.down_button.set_valign(Gtk.Align.CENTER)
+        self.down_button.set_child(Gtk.Label(label="\u25bc"))
+        self.down_button.set_tooltip_text(_("Run this group later"))
+        self.down_button.connect("clicked", self._on_move_down)
+        box.append(self.down_button)
 
         click = Gtk.GestureClick()
         click.set_button(Gdk.BUTTON_PRIMARY)
@@ -271,6 +331,17 @@ class GroupListRow(Gtk.ListBoxRow):
         )
         self.set_opacity(1.0 if state.visible else 0.5)
 
+        is_top = state.order_position > 0
+        self.order_label.set_visible(is_top)
+        self.up_button.set_visible(is_top)
+        self.down_button.set_visible(is_top)
+        if is_top:
+            self.order_label.set_label(str(state.order_position))
+            self.up_button.set_sensitive(state.order_position > 1)
+            self.down_button.set_sensitive(
+                state.order_position < state.order_count
+            )
+
         self.expand_button.set_sensitive(bool(state.child_names))
         if self._expanded:
             self._rebuild_children()
@@ -319,6 +390,12 @@ class GroupListRow(Gtk.ListBoxRow):
     def _on_visibility_toggled(self, button):
         set_group_visible(self._tab.editor, self.group, button.get_active())
 
+    def _on_move_up(self, button):
+        self._tab.move_group(self.group, -1)
+
+    def _on_move_down(self, button):
+        self._tab.move_group(self.group, 1)
+
     def _on_right_pressed(self, gesture, n_press, x, y):
         # While the name editor is open, leave the entry's own menu alone.
         if not self.group_row.is_renaming():
@@ -361,6 +438,24 @@ class GroupsTab(Gtk.Box):
         actions.add_action(rename_action)
         self.insert_action_group("groups", actions)
 
+        self.hint_label = Gtk.Label(
+            label=_(
+                "The group order is only used for G-code when "
+                '"Group-based G-code order" is enabled in '
+                "Settings > General > Behavior."
+            ),
+            xalign=0,
+        )
+        self.hint_label.set_wrap(True)
+        self.hint_label.add_css_class("dim-label")
+        self.hint_label.add_css_class("caption")
+        self.hint_label.set_margin_start(6)
+        self.hint_label.set_margin_end(6)
+        self.hint_label.set_margin_top(4)
+        self.hint_label.set_margin_bottom(4)
+        self.hint_label.set_visible(False)
+        self.append(self.hint_label)
+
         scrolled = Gtk.ScrolledWindow()
         scrolled.set_hexpand(True)
         scrolled.set_vexpand(True)
@@ -383,6 +478,8 @@ class GroupsTab(Gtk.Box):
         self.append(scrolled)
 
         self._connect_signals()
+        # The hint depends on the app-wide setting.
+        get_context().config.changed.connect(self._on_changed)
         self._refresh_now()
         self.connect("destroy", self._on_destroy)
 
@@ -416,6 +513,7 @@ class GroupsTab(Gtk.Box):
     def _on_destroy(self, *args):
         self._dismiss_popover()
         self._disconnect_signals()
+        get_context().config.changed.disconnect(self._on_changed)
 
     # Actions used by the rows -------------------------------------------
 
@@ -427,6 +525,20 @@ class GroupsTab(Gtk.Box):
             self._expanded_uids.add(group.uid)
         else:
             self._expanded_uids.discard(group.uid)
+
+    def move_group(self, group: Group, delta: int):
+        """Moves a top-level group earlier (-1) or later (+1)."""
+        if self.doc is None:
+            return
+        order = effective_group_order(self.doc)
+        if group.uid not in order:
+            return
+        i = order.index(group.uid)
+        j = i + delta
+        if j < 0 or j >= len(order):
+            return
+        order[i], order[j] = order[j], order[i]
+        set_group_order(self.doc, order)
 
     def select_group(self, group: Group):
         self.select_items_requested.send(
@@ -522,9 +634,12 @@ class GroupsTab(Gtk.Box):
         if self.doc is None:
             entries: list[tuple[Group, int]] = []
             layers_by_uid: dict = {}
+            order: list[str] = []
         else:
             entries = get_ordered_groups(self.doc)
             layers_by_uid = {layer.uid: layer for layer in self.doc.layers}
+            order = effective_group_order(self.doc)
+        positions = {uid: i + 1 for i, uid in enumerate(order)}
 
         structure = tuple((g.uid, depth) for g, depth in entries)
         if structure != self._structure:
@@ -534,7 +649,20 @@ class GroupsTab(Gtk.Box):
         # Same groups in the same order: update rows in place. This
         # keeps an open rename editor alive while other things change.
         for row in self._rows:
-            row.apply(get_group_state(row.group, layers_by_uid))
+            row.apply(
+                get_group_state(
+                    row.group,
+                    layers_by_uid,
+                    positions.get(row.group.uid, 0),
+                    len(order),
+                )
+            )
+
+        # Reordering is possible with two or more top-level groups. Hint
+        # that it only affects the G-code when the setting is on.
+        self.hint_label.set_visible(
+            len(order) >= 2 and not is_group_order_enabled()
+        )
 
     def _rebuild(self, entries: list[tuple[Group, int]]):
         self._dismiss_popover()
