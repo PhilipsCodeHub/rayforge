@@ -16,7 +16,7 @@ from gettext import gettext as _
 from typing import TYPE_CHECKING
 
 from ..core.step_registry import step_registry
-from .intent_builder import parse_workpiece_key
+from .intent_builder import parse_group_step_key, parse_workpiece_key
 from .transformer.registry import transformer_registry
 
 if TYPE_CHECKING:
@@ -103,6 +103,12 @@ def _node_status_message(
         return _("Processing '{workpiece}' — {step}").format(
             workpiece=workpiece.name, step=step.typelabel
         )
+    group_parsed = parse_group_step_key(node_key)
+    if group_parsed is not None:
+        step = steps_by_uid.get(group_parsed[0])
+        if step is None:
+            return _("Assembling")
+        return _("Assembling '{step}'").format(step=step.typelabel)
     if node_key.startswith("step:"):
         step = steps_by_uid.get(node_key.split(":", 1)[1])
         if step is None:
