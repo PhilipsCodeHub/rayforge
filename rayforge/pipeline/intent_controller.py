@@ -139,6 +139,7 @@ class IntentController:
         self._intent: Intent | None = None
         self._generation_id: int = 0
         self._rebuild_timer: Any | None = None
+        self._last_group_order: bool | None = None
         self._rebuilding: bool = False
         self._rebuild_pending: bool = False
         self._rebuild_task: Any | None = None
@@ -248,23 +249,43 @@ class IntentController:
         """Connect to the document's bubbled signals."""
         if self._doc is None:
             return
+        from ..context import get_context
+
         doc = self._doc
         doc.descendant_updated.connect(self._on_doc_changed)
         doc.descendant_transform_changed.connect(self._on_doc_changed)
         doc.descendant_added.connect(self._on_doc_changed)
         doc.descendant_removed.connect(self._on_doc_changed)
         doc.job_assembly_invalidated.connect(self._on_doc_changed)
+        config = get_context().config
+        self._last_group_order = config.group_gcode_order
+        config.changed.connect(self._on_config_changed)
 
     def disconnect(self) -> None:
         """Disconnect from the document's signals."""
         if self._doc is None:
             return
+        from ..context import get_context
+
         doc = self._doc
         doc.descendant_updated.disconnect(self._on_doc_changed)
         doc.descendant_transform_changed.disconnect(self._on_doc_changed)
         doc.descendant_added.disconnect(self._on_doc_changed)
         doc.descendant_removed.disconnect(self._on_doc_changed)
         doc.job_assembly_invalidated.disconnect(self._on_doc_changed)
+        get_context().config.changed.disconnect(self._on_config_changed)
+        
+    def _on_config_changed(self, sender, **kwargs) -> None:
+        """Rebuild when the group-based G-code order setting flips."""
+        if self._doc is None:
+            return
+        from ..context import get_context
+
+        enabled = get_context().config.group_gcode_order
+        if enabled == self._last_group_order:
+            return
+        self._last_group_order = enabled
+        self._schedule_rebuild()
 
     # ------------------------------------------------------------------
     # Signal handling (debounced)
@@ -397,10 +418,14 @@ class IntentController:
         def _worker() -> None:
             if self._doc is None or self._machine is None:
                 return
+            from ..context import get_context
+
+            group_order = get_context().config.group_gcode_order
             builder = IntentBuilder(
                 machine=self._machine,
                 generation_id=gen,
                 loop=getattr(self._task_manager, "loop", None),
+                group_gcode_order=group_order,
             )
             try:
                 nodes = builder.build(self._doc)
