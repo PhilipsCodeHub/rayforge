@@ -40,6 +40,7 @@ import hashlib
 import json
 import logging
 import math
+from dataclasses import dataclass
 from collections.abc import Callable, Mapping, Sequence
 from gettext import gettext as _
 from typing import (
@@ -88,6 +89,7 @@ from .artifact.encoded import EncodedOutput
 from .encode_inputs import build_gcode_spec
 from .transformer import OpsTransformer
 from .transformer.registry import transformer_registry
+from .group_order import resolve_group_batches
 
 if TYPE_CHECKING:
     from ..core.doc import Doc
@@ -220,6 +222,16 @@ def parse_group_step_key(key: str) -> tuple[str, str] | None:
     return (parts[0], parts[1])
 
 
+@dataclass(frozen=True)
+class _GroupSlot:
+    """One (group, layer) appearance in the group-first sequence."""
+
+    group_uid: str | None
+    layer: "Layer"
+    wp_uids: frozenset[str]
+    first_for_layer: bool
+
+
 def command_key(step_uid: str) -> str:
     """The compute node key of a geometry-less (workpiece-free) step."""
     return COMMAND_KEY_FMT.format(step_uid=step_uid)
@@ -338,19 +350,24 @@ class IntentBuilder:
         self._build_stock_fold_nodes(doc, wp_compute_keys, nodes)
         self._build_rotary_fold_nodes(doc, wp_compute_keys, nodes)
 
-        for layer in doc.layers:
-            if not layer.workflow:
-                continue
-            for step in layer.workflow.steps:
-                if not step.visible:
+        if self._group_gcode_order:
+            self._build_grouped_step_nodes(
+                doc, step_compute_inputs, step_tokens, nodes
+            )
+        else:
+            for layer in doc.layers:
+                if not layer.workflow:
                     continue
-                upstream = step_compute_inputs.get(step.uid, [])
-                if not upstream:
-                    continue
-                self._build_step_node(step, layer, upstream, nodes)
-                step_tokens[step.uid] = self._aggregate_token(
-                    step, layer, upstream
-                )
+                for step in layer.workflow.steps:
+                    if not step.visible:
+                        continue
+                    upstream = step_compute_inputs.get(step.uid, [])
+                    if not upstream:
+                        continue
+                    self._build_step_node(step, layer, upstream, nodes)
+                    step_tokens[step.uid] = self._aggregate_token(
+                        step, layer, upstream
+                    )
 
         if step_tokens:
             self._build_job_node(doc, nodes, step_tokens)
@@ -476,6 +493,151 @@ class IntentBuilder:
         # them in the JobArtifact, so a cached copy would only retain
         # a duplicate of the job's command buffer between builds.
         out.append(self._make_request(key, token, stage, cacheable=False))
+
+    def _grouped_layer_slots(self, doc: Doc) -> list[_GroupSlot]:
+        """Group-first sequence of (group, layer) appearances."""
+        slots: list[_GroupSlot] = []
+        seen: set[str] = set()
+        for batch in resolve_group_batches(doc):
+            for layer, wps in batch.by_layer:
+                if not layer.workflow:
+                    continue
+                slots.append(
+                    _GroupSlot(
+                        group_uid=batch.group_uid,
+                        layer=layer,
+                        wp_uids=frozenset(wp.uid for wp in wps),
+                        first_for_layer=layer.uid not in seen,
+                    )
+                )
+                seen.add(layer.uid)
+        # Layers with no workpieces still run their geometry-free steps.
+        for layer in doc.layers:
+            if layer.uid not in seen and layer.workflow:
+                slots.append(_GroupSlot(None, layer, frozenset(), True))
+        return slots
+
+    def _build_grouped_step_nodes(
+        self,
+        doc: Doc,
+        step_compute_inputs: dict[
+            str, list[tuple[str, int, WorkPiece | None]]
+        ],
+        step_tokens: dict[str, int],
+        out: list[NodeRequest],
+    ) -> None:
+        for slot in self._grouped_layer_slots(doc):
+            layer = slot.layer
+            workflow = layer.workflow
+            if workflow is None:
+                continue
+            for step in workflow.steps:
+                if not step.visible:
+                    continue
+                upstream = step_compute_inputs.get(step.uid, [])
+                if not upstream:
+                    continue
+                if not step.needs_workpieces:
+                    if not slot.first_for_layer:
+                        continue
+                    self._build_step_node(step, layer, upstream, out)
+                    step_tokens[step.uid] = self._aggregate_token(
+                        step, layer, upstream
+                    )
+                    continue
+                subset = [
+                    i
+                    for i in upstream
+                    if i[2] is not None and i[2].uid in slot.wp_uids
+                ]
+                if not subset:
+                    continue
+                key = group_step_key(step.uid, slot.group_uid)
+                token = self._aggregate_token(step, layer, subset)
+                stage = self._step_stage(step, subset)
+                out.append(
+                    self._make_request(key, token, stage, cacheable=False)
+                )
+                step_tokens[key] = token
+
+    def _grouped_entries(
+        self, doc: Doc, step_tokens: dict[str, int]
+    ) -> list[tuple[_GroupSlot, list[tuple[str, str, Step]]]]:
+        """Per slot: (aggregate key, step_tokens key, step) entries.
+
+        Geometry-free steps come first, and only in the layer's first
+        appearance; workpiece steps follow in workflow order.
+        """
+        result: list[tuple[_GroupSlot, list[tuple[str, str, Step]]]] = []
+        for slot in self._grouped_layer_slots(doc):
+            workflow = slot.layer.workflow
+            if workflow is None:
+                continue
+            command_entries: list[tuple[str, str, Step]] = []
+            wp_entries: list[tuple[str, str, Step]] = []
+            for step in workflow.steps:
+                if not step.visible:
+                    continue
+                if step.needs_workpieces:
+                    agg_key = group_step_key(step.uid, slot.group_uid)
+                    if agg_key in step_tokens:
+                        wp_entries.append((agg_key, agg_key, step))
+                elif slot.first_for_layer and step.uid in step_tokens:
+                    command_entries.append(
+                        (step_key(step.uid), step.uid, step)
+                    )
+            entries = command_entries + wp_entries
+            if entries:
+                result.append((slot, entries))
+        return result
+
+    def _job_token_grouped(
+        self, doc: Doc, step_tokens: dict[str, int]
+    ) -> int:
+        payloads = []
+        for slot, entries in self._grouped_entries(doc, step_tokens):
+            for _agg_key, token_key, step in entries:
+                payloads.append(
+                    {
+                        "group_uid": slot.group_uid,
+                        "layer_uid": slot.layer.uid,
+                        "step_uid": step.uid,
+                        "step_token": step_tokens[token_key],
+                        "step_params": step.get_cache_params(),
+                        "spxf": _canonical(step.per_step_transformers_dicts),
+                    }
+                )
+        return _hash_int({"kind": "job_grouped", "steps": payloads})
+
+    def _job_stage_grouped(
+        self, doc: Doc, step_tokens: dict[str, int]
+    ) -> StageSpec.Aggregate:
+        groups: list[AggregateGroup] = []
+        for slot, entries in self._grouped_entries(doc, step_tokens):
+            layer = slot.layer
+            groups.append(
+                AggregateGroup(
+                    start_markers=[
+                        Marker.LayerStart(uid=layer.uid, _tag=True)
+                    ],
+                    inputs=[
+                        AggregateInput(
+                            source_key=agg_key,
+                            placement_matrix=_IDENTITY_4X4,
+                            uid=step.uid,
+                        )
+                        for agg_key, _tk, step in entries
+                    ],
+                    end_markers=[Marker.LayerEnd(uid=layer.uid, _tag=True)],
+                )
+            )
+        spec = AggregateSpec(
+            wrap_start=[Marker.JobStart(_tag=True)],
+            groups=groups,
+            wrap_end=[Marker.JobEnd(_tag=True)],
+            machine=self._machine_params(),
+        )
+        return StageSpec.Aggregate(spec=spec)
 
     def _build_machine_transform_node(
         self,
@@ -892,6 +1054,8 @@ class IntentBuilder:
         # therefore folds in the per-step aggregate tokens so that any
         # upstream change (workpiece move, transformer edit, step
         # param change) propagates through to the job/encode cache.
+        if self._group_gcode_order:
+            return self._job_token_grouped(doc, step_tokens)
         payloads = []
         for layer in doc.layers:
             if not layer.workflow:
@@ -1276,6 +1440,8 @@ class IntentBuilder:
         populated from the resolved machine so the aggregate's time
         estimate is correct.
         """
+        if self._group_gcode_order:
+            return self._job_stage_grouped(doc, step_tokens)
         groups: list[AggregateGroup] = []
         for layer in doc.layers:
             if not layer.workflow:
