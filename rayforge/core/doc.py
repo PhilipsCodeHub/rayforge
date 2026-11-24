@@ -47,6 +47,8 @@ class Doc(DocItem):
         # Asset Management
         self.assets: dict[str, IAsset] = {}
         self.asset_order: list[str] = []
+        # Ordered group UIDs used for group-based G-code execution.
+        self.group_execution_order: list[str] = []
         self._loading = False
         self._known_workpiece_keys: set[str] = set()
 
@@ -101,6 +103,9 @@ class Doc(DocItem):
         doc = cls()
         doc._loading = True
         doc.uid = data.get("uid", doc.uid)
+        doc.group_execution_order = list(
+            data.get("group_execution_order", [])
+        )
         doc.job_counter = JobCounter.from_dict(data.get("job_counter"))
 
         # Clear the default layer created by __init__
@@ -187,6 +192,7 @@ class Doc(DocItem):
             "uid": self.uid,
             "type": "doc",
             "active_layer_index": self._active_layer_index,
+            "group_execution_order": self.group_execution_order,
             "children": [child.to_dict() for child in self.children],
             "assets": [asset.to_dict() for asset in self.get_all_assets()],
             "job_counter": self._job_counter.to_dict(),
