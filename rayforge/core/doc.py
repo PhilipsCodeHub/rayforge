@@ -345,6 +345,25 @@ class Doc(DocItem):
         self.asset_order = new_order_uids
         self.updated.send(self)
 
+    def set_group_execution_order(self, uids: list[str]):
+        """
+        Sets the execution order of top-level groups for group-based
+        G-code ordering. Stale or missing UIDs are tolerated by the
+        pipeline, so no validation against the current groups is done.
+        """
+        new_order: list[str] = []
+        seen: set[str] = set()
+        for uid in uids:
+            if isinstance(uid, str) and uid not in seen:
+                new_order.append(uid)
+                seen.add(uid)
+        if new_order == self.group_execution_order:
+            return
+        self.group_execution_order = new_order
+        # The pipeline listens to job_assembly_invalidated, not updated.
+        self.job_assembly_invalidated.send(self)
+        self.updated.send(self)
+
     def get_all_assets(self) -> list[IAsset]:
         """Returns a unified list of all assets in the canonical order."""
         return [
