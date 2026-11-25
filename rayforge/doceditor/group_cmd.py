@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 from raygeo.geo import Matrix
 
-from ..core.group import Group, GroupingResult
+from ..core.group import ORIGIN_LAYER_UID, Group, GroupingResult
 from ..core.item import DocItem
 from ..core.layer import Layer
 from ..core.undo.command import Command
@@ -19,10 +19,6 @@ if TYPE_CHECKING:
     from .editor import DocEditor
 
 logger = logging.getLogger(__name__)
-
-# Tag written to DocItem.extra to remember which Layer the item lived on
-# before it was swept into a cross-layer Group.
-ORIGIN_LAYER_UID = "origin_layer_uid"
 
 
 class _CreateGroupCommand(Command):

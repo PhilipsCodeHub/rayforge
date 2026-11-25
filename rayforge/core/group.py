@@ -18,6 +18,39 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+# Key in ``DocItem.extra`` holding the uid of the layer an item came from
+# before it was grouped. Written by the group command; read by
+# effective_layer().
+ORIGIN_LAYER_UID = "origin_layer_uid"
+
+
+def effective_layer(
+    item: DocItem, layers_by_uid: dict[str, Layer]
+) -> Layer | None:
+    """
+    Returns the layer whose workflow applies to ``item``.
+
+    For an item inside a Group this is the origin layer recorded in
+    ``extra[ORIGIN_LAYER_UID]``, if that layer still exists in
+    ``layers_by_uid``. Otherwise (no tag, deleted origin layer, item not
+    inside a group, so any tag is stale) it is the layer found through
+    the hierarchy. Returns None for items that are not under a layer.
+    """
+    from .layer import Layer  # Local import to avoid circular dependency
+
+    hierarchy = item.get_ancestor_by_type(Layer)
+    if not isinstance(hierarchy, Layer):
+        return None
+    if not isinstance(item.parent, Group):
+        return hierarchy
+    uid = getattr(item, "extra", {}).get(ORIGIN_LAYER_UID)
+    if uid:
+        origin = layers_by_uid.get(uid)
+        if origin is not None:
+            return origin
+    return hierarchy
+
+
 @dataclass
 class GroupingResult:
     """A container for the results of the group creation calculation."""

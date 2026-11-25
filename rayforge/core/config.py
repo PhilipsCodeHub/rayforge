@@ -117,6 +117,8 @@ class Config:
         self.prevent_sleep_while_working: bool = True
         # Whether G-code operations are ordered by group.
         self.group_gcode_order: bool = False
+        # Whether grouped items keep the workflow of their origin layer.
+        self.group_child_layer_workflow: bool = False
         # Usage tracking consent date: None = not asked, "" = declined,
         # ISO date string = consent given on that date
         self.usage_consent_date: str | None = None
@@ -297,6 +299,13 @@ class Config:
         self.group_gcode_order = enabled
         self.changed.send(self)
 
+    def set_group_child_layer_workflow(self, enabled: bool):
+        """Sets whether grouped items use their origin layer's workflow."""
+        if self.group_child_layer_workflow == enabled:
+            return
+        self.group_child_layer_workflow = enabled
+        self.changed.send(self)
+
     def set_ops_color_mode(self, mode: OpsColorMode):
         """Sets the ops color mode."""
         if self.ops_color_mode == mode:
@@ -427,6 +436,7 @@ class Config:
             "watch_source_files": self.watch_source_files,
             "prevent_sleep_while_working": self.prevent_sleep_while_working,
             "group_gcode_order": self.group_gcode_order,
+            "group_child_layer_workflow": self.group_child_layer_workflow,
             "ops_color_mode": self.ops_color_mode.value,
             "usage_consent_date": self.usage_consent_date,
             "import_dpi": self.import_dpi,
@@ -511,6 +521,10 @@ class Config:
             "prevent_sleep_while_working", True
         )
         config.group_gcode_order = data.get("group_gcode_order", False)
+
+        config.group_child_layer_workflow = data.get(
+            "group_child_layer_workflow", False
+        )
 
         ops_color_mode_str = data.get(
             "ops_color_mode", OpsColorMode.LASER.value

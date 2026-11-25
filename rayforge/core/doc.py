@@ -461,6 +461,42 @@ class Doc(DocItem):
             wps.extend(layer.all_workpieces)
         return wps
 
+    def workpieces_by_layer(
+        self, use_origin: bool = False
+    ) -> dict[str, list[WorkPiece]]:
+        """
+        Maps each layer uid to the workpieces whose workflow it owns.
+
+        With ``use_origin`` False, this is the hierarchy: the lists are
+        exactly ``layer.all_workpieces`` (children of a cross-layer
+        group belong to the layer the group sits on).
+
+        With ``use_origin`` True, each workpiece goes to its effective
+        layer (see ``effective_layer``): the origin layer recorded when
+        it was grouped, falling back to the hierarchy layer. Order
+        follows document traversal, so layers without cross-layer
+        groups get the same list as in the hierarchy case. Every layer
+        has an entry, possibly empty.
+        """
+        from .group import effective_layer  # Avoid circular import
+
+        result: dict[str, list[WorkPiece]] = {
+            layer.uid: [] for layer in self.layers
+        }
+        if not use_origin:
+            for layer in self.layers:
+                result[layer.uid] = list(layer.all_workpieces)
+            return result
+
+        layers_by_uid = {layer.uid: layer for layer in self.layers}
+        for layer in self.layers:
+            for wp in layer.all_workpieces:
+                owner = effective_layer(wp, layers_by_uid)
+                if owner is None or owner.uid not in result:
+                    owner = layer
+                result[owner.uid].append(wp)
+        return result
+
     def add_workpiece(self, workpiece: WorkPiece):
         """Adds a workpiece to the currently active layer."""
         self.active_layer.add_workpiece(workpiece)
