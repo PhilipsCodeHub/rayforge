@@ -140,6 +140,7 @@ class IntentController:
         self._generation_id: int = 0
         self._rebuild_timer: Any | None = None
         self._last_group_order: bool | None = None
+        self._last_group_child_layer_workflow: bool | None = None
         self._rebuilding: bool = False
         self._rebuild_pending: bool = False
         self._rebuild_task: Any | None = None
@@ -259,6 +260,9 @@ class IntentController:
         doc.job_assembly_invalidated.connect(self._on_doc_changed)
         config = get_context().config
         self._last_group_order = config.group_gcode_order
+        self._last_group_child_layer_workflow = (
+            config.group_child_layer_workflow
+        )
         config.changed.connect(self._on_config_changed)
 
     def disconnect(self) -> None:
@@ -276,15 +280,21 @@ class IntentController:
         get_context().config.changed.disconnect(self._on_config_changed)
         
     def _on_config_changed(self, sender, **kwargs) -> None:
-        """Rebuild when the group-based G-code order setting flips."""
+        """Rebuild when a group-related pipeline setting flips."""
         if self._doc is None:
             return
         from ..context import get_context
 
-        enabled = get_context().config.group_gcode_order
-        if enabled == self._last_group_order:
+        config = get_context().config
+        order = config.group_gcode_order
+        child_wf = config.group_child_layer_workflow
+        if (
+            order == self._last_group_order
+            and child_wf == self._last_group_child_layer_workflow
+        ):
             return
-        self._last_group_order = enabled
+        self._last_group_order = order
+        self._last_group_child_layer_workflow = child_wf
         self._schedule_rebuild()
 
     # ------------------------------------------------------------------
@@ -420,12 +430,15 @@ class IntentController:
                 return
             from ..context import get_context
 
-            group_order = get_context().config.group_gcode_order
+            config = get_context().config
             builder = IntentBuilder(
                 machine=self._machine,
                 generation_id=gen,
                 loop=getattr(self._task_manager, "loop", None),
-                group_gcode_order=group_order,
+                group_gcode_order=config.group_gcode_order,
+                group_child_layer_workflow=(
+                    config.group_child_layer_workflow
+                ),
             )
             try:
                 nodes = builder.build(self._doc)
