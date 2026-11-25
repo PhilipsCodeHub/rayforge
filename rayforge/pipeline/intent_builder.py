@@ -282,11 +282,14 @@ class IntentBuilder:
         generation_id: int = 0,
         loop: asyncio.AbstractEventLoop | None = None,
         group_gcode_order: bool = False,
+        group_child_layer_workflow: bool = False,
     ):
         self._machine = machine
         self._generation_id = generation_id
         self._loop = loop
         self._group_gcode_order = group_gcode_order
+        self._group_child_layer_workflow = group_child_layer_workflow
+        self._wps_by_layer: dict[str, list[WorkPiece]] = {}
         self._doc: Doc | None = None
 
     @property
@@ -312,11 +315,14 @@ class IntentBuilder:
         # token so a position change that invalidates one step's
         # aggregate also invalidates the job aggregate (and encode).
         step_tokens: dict[str, int] = {}
+        self._wps_by_layer = doc.workpieces_by_layer(
+            self._group_child_layer_workflow
+        )
 
         for layer in doc.layers:
             if not layer.workflow or not layer.workflow.steps:
                 continue
-            workpieces = list(layer.all_workpieces)
+            workpieces = list(self._wps_by_layer.get(layer.uid, []))
             for step in layer.workflow.steps:
                 if not step.visible:
                     continue
@@ -860,7 +866,10 @@ class IntentBuilder:
 
         entries: list[FoldEntry] = []
         source_keys: list[str] = []
-        for wp in layer.all_workpieces:
+        layer_wps = self._wps_by_layer.get(layer.uid)
+        if layer_wps is None:
+            layer_wps = layer.all_workpieces
+        for wp in layer_wps:
             wp_key = keys_by_wp_uid.get(wp.uid)
             if wp_key is None:
                 continue
