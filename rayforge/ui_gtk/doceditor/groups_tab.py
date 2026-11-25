@@ -82,6 +82,9 @@ class GroupState(NamedTuple):
     # 1-based position among the top-level groups; 0 = not top-level.
     order_position: int = 0
     order_count: int = 0
+    # Origin layer name of each child, parallel to child_names. An entry
+    # is "" when it should not be shown.
+    child_origins: tuple[str, ...] = ()
 
 
 def _iter_groups(item, depth: int = 0) -> Iterator[tuple[Group, int]]:
@@ -134,6 +137,24 @@ def group_origin_layers(group: Group, layers_by_uid: dict) -> list:
     return origins
 
 
+def group_child_origin_names(
+    group: Group, layers_by_uid: dict
+) -> tuple[str, ...]:
+    """
+    Name of the layer each child came from, parallel to group.children.
+    All entries are "" unless the group holds children from other layers
+    (see group_origin_layers), so ordinary groups show nothing.
+    """
+    if not group_origin_layers(group, layers_by_uid):
+        return tuple("" for _child in group.children)
+    names: list[str] = []
+    for child in group.children:
+        uid = (getattr(child, "extra", None) or {}).get(ORIGIN_LAYER_UID)
+        layer = layers_by_uid.get(uid) if uid else None
+        names.append(_layer_name(layer))
+    return tuple(names)
+
+
 def get_group_state(
     group: Group,
     layers_by_uid: dict,
@@ -157,6 +178,7 @@ def get_group_state(
         ),
         order_position=order_position,
         order_count=order_count,
+        child_origins=group_child_origin_names(group, layers_by_uid),
     )
 
 
@@ -205,7 +227,7 @@ class GroupListRow(Gtk.ListBoxRow):
         self.group = group
         self._state: GroupState | None = None
         self._expanded = False
-        self._built_names: tuple[str, ...] | None = None
+        self._built_lines: tuple[tuple[str, str], ...] | None = None
 
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self.set_child(outer)
@@ -268,11 +290,6 @@ class GroupListRow(Gtk.ListBoxRow):
         self.layer_name_label.set_ellipsize(Pango.EllipsizeMode.END)
         box.append(self.layer_name_label)
 
-        self.origin_label = Gtk.Label()
-        self.origin_label.add_css_class("dim-label")
-        self.origin_label.set_ellipsize(Pango.EllipsizeMode.END)
-        box.append(self.origin_label)
-
         self.up_button = Gtk.Button()
         self.up_button.add_css_class("flat")
         self.up_button.set_valign(Gtk.Align.CENTER)
@@ -318,13 +335,6 @@ class GroupListRow(Gtk.ListBoxRow):
         self.layer_name_label.set_label(state.layer_name)
         self.layer_name_label.set_visible(bool(state.layer_name))
 
-        origin = ", ".join(state.origin_names)
-        self.origin_label.set_visible(bool(origin))
-        if origin:
-            self.origin_label.set_label(
-                _("from: {layers}").format(layers=origin)
-            )
-
         self.vis_button.set_visible(state.has_visibility)
         self.vis_button.handler_block(self._vis_handler_id)
         self.vis_button.set_active(state.visible)
@@ -369,10 +379,12 @@ class GroupListRow(Gtk.ListBoxRow):
         """Fills the item lines. Only done for expanded groups."""
         if self._state is None:
             return
-        names = self._state.child_names
-        if names == self._built_names:
+        lines = tuple(
+            zip(self._state.child_names, self._state.child_origins)
+        )
+        if lines == self._built_lines:
             return
-        self._built_names = names
+        self._built_lines = lines
 
         child = self.children_box.get_first_child()
         while child:
@@ -380,13 +392,28 @@ class GroupListRow(Gtk.ListBoxRow):
             self.children_box.remove(child)
             child = next_child
 
-        for name in names:
+        for name, origin in lines:
+            line = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=9)
+            line.set_margin_top(2)
+            line.set_margin_bottom(2)
+
             label = Gtk.Label(label=name, xalign=0)
             label.add_css_class("caption")
+            label.set_hexpand(True)
+            label.set_halign(Gtk.Align.START)
             label.set_ellipsize(Pango.EllipsizeMode.END)
-            label.set_margin_top(2)
-            label.set_margin_bottom(2)
-            self.children_box.append(label)
+            line.append(label)
+
+            # Layer the item was taken from (cross-layer groups only).
+            if origin:
+                origin_label = Gtk.Label(label=origin, xalign=1)
+                origin_label.add_css_class("caption")
+                origin_label.add_css_class("dim-label")
+                origin_label.set_halign(Gtk.Align.END)
+                origin_label.set_ellipsize(Pango.EllipsizeMode.END)
+                line.append(origin_label)
+
+            self.children_box.append(line)
 
     def set_selected(self, selected: bool):
         if selected:
