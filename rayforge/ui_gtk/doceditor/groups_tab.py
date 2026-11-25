@@ -30,6 +30,7 @@ from ...core.doc import Doc
 from ...core.group import Group
 from ...core.undo.setter_cmd import SetterCommand
 from ...core.workpiece import WorkPiece
+from ...doceditor.group_cmd import ORIGIN_LAYER_UID
 from ...pipeline.group_order import (
     effective_group_order,
     top_level_groups,
@@ -55,10 +56,6 @@ _INDENT = 12
 # Extra indentation of the item lines below an expanded group.
 _CHILD_INDENT = 46
 
-# Written by feature/preserve-layer-on-group (group_cmd.ORIGIN_LAYER_UID)
-# into each grouped child's `extra` dict. Kept as a literal on purpose:
-# the constant does not exist on main, so importing it would break there.
-ORIGIN_LAYER_KEY = "origin_layer_uid"
 
 # Window actions used by the context menu. They operate on the current
 # canvas selection, exactly like the main menu and the keyboard.
@@ -128,7 +125,7 @@ def group_origin_layers(group: Group, layers_by_uid: dict) -> list:
     """
     origins: list = []
     for child in group.children:
-        uid = (getattr(child, "extra", None) or {}).get(ORIGIN_LAYER_KEY)
+        uid = (getattr(child, "extra", None) or {}).get(ORIGIN_LAYER_UID)
         layer = layers_by_uid.get(uid) if uid else None
         if layer is not None and layer not in origins:
             origins.append(layer)
