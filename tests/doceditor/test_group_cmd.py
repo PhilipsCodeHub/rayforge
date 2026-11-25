@@ -1,6 +1,8 @@
 import pytest
+import asyncio
 from raygeo.geo import Matrix
 
+from rayforge.core.layer import Layer
 from rayforge.core.group import Group
 from rayforge.core.item import DocItem
 from rayforge.core.workpiece import WorkPiece
@@ -18,6 +20,88 @@ def doc_editor(task_mgr, context_initializer):
     # The editor's cleanup handles its internal resources like the pipeline.
     # The fixtures will handle their own teardown (context, task manager).
     editor.cleanup()
+
+
+@pytest.fixture
+def two_layers_with_items(doc_editor):
+    doc = doc_editor.doc
+    layer_a = doc.active_layer
+    layer_b = Layer(name="Layer B")
+    doc.add_layer(layer_b)
+
+    item_a = WorkPiece(name="item_a.svg")
+    item_b = WorkPiece(name="item_b.svg")
+    layer_a.add_child(item_a)
+    layer_b.add_child(item_b)
+
+    return layer_a, layer_b, item_a, item_b
+
+
+@pytest.mark.asyncio
+async def wait_for_grouping(doc_editor):
+    while doc_editor.is_processing:
+        await asyncio.sleep(0.01)
+
+
+@pytest.mark.asyncio
+async def test_group_tags_origin_layer(doc_editor, two_layers_with_items):
+    layer_a, layer_b, item_a, item_b = two_layers_with_items
+    doc_editor.group.group_items(layer_a, [item_a, item_b])
+    await wait_for_grouping(doc_editor)
+    assert item_a.extra["origin_layer_uid"] == layer_a.uid
+    assert item_b.extra["origin_layer_uid"] == layer_b.uid
+
+
+@pytest.mark.asyncio
+async def test_ungroup_restores_original_layers(doc_editor, two_layers_with_items):
+    layer_a, layer_b, item_a, item_b = two_layers_with_items
+    world_a = item_a.get_world_transform()
+    world_b = item_b.get_world_transform()
+
+    doc_editor.group.group_items(layer_a, [item_a, item_b])
+    await wait_for_grouping(doc_editor)
+    group = next(c for c in layer_a.children if isinstance(c, Group))
+    doc_editor.group.ungroup_items([group])
+    await wait_for_grouping(doc_editor)
+
+    assert item_a.parent is layer_a
+    assert item_b.parent is layer_b
+    # world position preserved
+    assert item_a.get_world_transform() == world_a
+    assert item_b.get_world_transform() == world_b
+    assert "origin_layer_uid" not in item_a.extra
+    assert "origin_layer_uid" not in item_b.extra
+
+
+@pytest.mark.asyncio
+async def test_ungroup_falls_back_when_origin_layer_gone(
+    doc_editor, two_layers_with_items
+):
+    layer_a, layer_b, item_a, item_b = two_layers_with_items
+    doc_editor.group.group_items(layer_a, [item_a, item_b])
+    await wait_for_grouping(doc_editor)
+    group = next(c for c in layer_a.children if isinstance(c, Group))
+    # Adapt to the actual API used in other tests.
+    doc_editor.doc.remove_layer(layer_b)
+    doc_editor.group.ungroup_items([group])
+    await wait_for_grouping(doc_editor)
+    assert item_a.parent is layer_a
+    assert item_b.parent is layer_a  # fallback
+
+
+@pytest.mark.asyncio
+async def test_regroup_overwrites_stale_tag(doc_editor, two_layers_with_items):
+    layer_a, layer_b, item_a, item_b = two_layers_with_items
+    doc_editor.group.group_items(layer_a, [item_a, item_b])
+    await wait_for_grouping(doc_editor)
+    group = next(c for c in layer_a.children if isinstance(c, Group))
+    doc_editor.group.ungroup_items([group])
+    await wait_for_grouping(doc_editor)
+    # item_b's tag was removed on ungroup; regroup should re-tag with
+    # whatever its current layer is.
+    doc_editor.group.group_items(layer_a, [item_a, item_b])
+    await wait_for_grouping(doc_editor)
+    assert item_b.extra["origin_layer_uid"] == layer_b.uid
 
 
 @pytest.mark.asyncio
