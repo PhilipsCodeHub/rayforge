@@ -504,7 +504,9 @@ class IntentBuilder:
         """Group-first sequence of (group, layer) appearances."""
         slots: list[_GroupSlot] = []
         seen: set[str] = set()
-        for batch in resolve_group_batches(doc):
+        for batch in resolve_group_batches(
+            doc, self._group_child_layer_workflow
+        ):
             for layer, wps in batch.by_layer:
                 if not layer.workflow:
                     continue

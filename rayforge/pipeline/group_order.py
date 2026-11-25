@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from ..core.group import Group
+from ..core.group import Group, effective_layer
 from ..core.layer import Layer
 from ..core.workpiece import WorkPiece
 
@@ -57,16 +57,20 @@ def effective_group_order(doc: Doc) -> list[str]:
     return _ordered_uids(doc.group_execution_order, _top_groups_by_uid(doc))
 
 
-def resolve_group_batches(doc: Doc) -> list[GroupBatch]:
+def resolve_group_batches(
+    doc: Doc, use_origin: bool = False
+) -> list[GroupBatch]:
     """
     Returns execution batches for group-based G-code ordering:
     top-level groups in doc.group_execution_order, then any top-level
     groups missing from that list (document order), then ungrouped
     workpieces. Stale or duplicate UIDs are ignored. Empty batches
-    are omitted.
+    are omitted. With use_origin True, 
+    grouped workpieces are bucketed by their effective (origin) layer.
     """
     layers = list(doc.layers)
     layer_index = {layer.uid: i for i, layer in enumerate(layers)}
+    layers_by_uid = {layer.uid: layer for layer in layers}
 
     top_groups = _top_groups_by_uid(doc)
     ordered = _ordered_uids(doc.group_execution_order, top_groups)
@@ -75,7 +79,10 @@ def resolve_group_batches(doc: Doc) -> list[GroupBatch]:
     for uid in ordered:
         buckets: dict[str, tuple[Layer, list[WorkPiece]]] = {}
         for wp in top_groups[uid].all_workpieces:
-            layer = wp.get_ancestor_by_type(Layer)
+            if use_origin:
+                layer = effective_layer(wp, layers_by_uid)
+            else:
+                layer = wp.get_ancestor_by_type(Layer)
             if not isinstance(layer, Layer) or layer.uid not in layer_index:
                 continue
             buckets.setdefault(layer.uid, (layer, []))[1].append(wp)

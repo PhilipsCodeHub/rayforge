@@ -13,6 +13,7 @@ from blinker import Signal
 from raygeo.pipeline.completed import ErrorKind
 from raygeo.pipeline.execute import Pipeline as RaygeoPipeline
 
+from ..context import get_context
 from ..core.capability import MachineCapability
 from ..core.doc import Doc
 from ..core.workpiece import WorkPiece
@@ -112,10 +113,13 @@ class Pipeline:
     def _has_workflow_content(self) -> bool:
         if not self._doc:
             return False
+        wps_by_layer = self._doc.workpieces_by_layer(
+            get_context().config.group_child_layer_workflow
+        )
         for layer in self._doc.layers:
             if not (layer.workflow and layer.workflow.steps):
                 continue
-            if layer.all_workpieces:
+            if wps_by_layer.get(layer.uid):
                 return True
             # Geometry-less steps (e.g. the Command step) run without
             # any workpiece in the layer.
@@ -137,10 +141,13 @@ class Pipeline:
         """
         if not self._doc:
             return False
+        wps_by_layer = self._doc.workpieces_by_layer(
+            get_context().config.group_child_layer_workflow
+        )
         for layer in self._doc.layers:
             if not layer.workflow or not layer.workflow.steps:
                 continue
-            workpieces = list(layer.all_workpieces)
+            workpieces = list(wps_by_layer.get(layer.uid, []))
             for step in layer.workflow.steps:
                 if not step.visible:
                     continue
