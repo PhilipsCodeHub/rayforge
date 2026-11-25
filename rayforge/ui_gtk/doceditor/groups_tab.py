@@ -426,6 +426,8 @@ class GroupsTab(Gtk.Box):
         self._context_popover: Gtk.PopoverMenu | None = None
         self._context_group: Group | None = None
         self._pending_rename: Group | None = None
+        self._popover_closed = False
+        self._rename_started = False
         self._expanded_uids: set = set()
 
         self.select_items_requested = Signal()
@@ -582,6 +584,11 @@ class GroupsTab(Gtk.Box):
             popover.set_pointing_to(rect)
         popover.connect("closed", self._on_popover_closed)
         self._context_popover = popover
+        # Fresh state for this menu: a late action or "closed" signal
+        # of an earlier menu must not start a rename for another group.
+        self._pending_rename = None
+        self._popover_closed = False
+        self._rename_started = False
         popover.popup()
 
     def _dismiss_popover(self):
@@ -591,14 +598,33 @@ class GroupsTab(Gtk.Box):
 
     def _on_rename_action(self, action, param):
         # Don't start the editor yet: the closing popover would give the
-        # focus back to the row and immediately end the rename.
-        self._pending_rename = self._context_group
+        # focus back to the row and immediately end the rename. GTK does
+        # not guarantee whether the action or the "closed" signal comes
+        # first, so handle both orders.
+        group = self._context_group
+        if group is None:
+            return
+        if self._popover_closed:
+            self._request_rename(group)
+        else:
+            self._pending_rename = group
 
     def _on_popover_closed(self, popover):
+        # Ignore menus that were already replaced by a newer one.
+        if popover is not self._context_popover:
+            return
+        self._popover_closed = True
         group = self._pending_rename
         self._pending_rename = None
         if group is not None:
-            GLib.idle_add(self._start_rename, group)
+            self._request_rename(group)
+
+    def _request_rename(self, group: Group):
+        # At most one rename per menu, even if the action fires twice.
+        if self._rename_started:
+            return
+        self._rename_started = True
+        GLib.idle_add(self._start_rename, group)
 
     def _start_rename(self, group: Group):
         for row in self._rows:
