@@ -316,6 +316,21 @@ class GeneralPreferencesPage(TrackedPreferencesPage):
         )
         startup_group.add(self.group_gcode_order_row)
 
+        self.group_child_layer_workflow_row = Adw.SwitchRow(
+            title=_("Use each item's own layer workflow in groups"),
+            subtitle=_(
+                "Items in a group keep the workflow of the layer they "
+                "came from"
+            ),
+        )
+        self.group_child_layer_workflow_row.set_active(
+            config.group_child_layer_workflow
+        )
+        self.group_child_layer_workflow_row.connect(
+            "notify::active", self.on_group_child_layer_workflow_changed
+        )
+        startup_group.add(self.group_child_layer_workflow_row)
+
         self.cache_budget_row = SpinRow(
             _("Cache budget (MB)"),
             _("Maximum memory for cache. High complexity scenes require more"),
@@ -685,3 +700,8 @@ class GeneralPreferencesPage(TrackedPreferencesPage):
         """Called when the user toggles group-based G-code ordering."""
         enabled = switch_row.get_active()
         get_context().config.set_group_gcode_order(enabled)
+
+    def on_group_child_layer_workflow_changed(self, switch_row, _):
+        """Called when the user toggles per-item layer workflows."""
+        enabled = switch_row.get_active()
+        get_context().config.set_group_child_layer_workflow(enabled)
