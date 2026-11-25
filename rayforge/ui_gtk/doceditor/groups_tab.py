@@ -28,6 +28,7 @@ from gi.repository import Gdk, Gio, GLib, Gtk, Pango
 from ...context import get_context
 from ...core.doc import Doc
 from ...core.group import Group
+from ...core.undo.setter_cmd import SetterCommand
 from ...core.workpiece import WorkPiece
 from ...pipeline.group_order import (
     effective_group_order,
@@ -174,9 +175,18 @@ def set_group_visible(editor: "DocEditor", group: Group, visible: bool):
 
 
 def set_group_order(doc: Doc, uids: list[str]):
-    # Sends job_assembly_invalidated, so the pipeline rebuilds.
-    # TODO: make this undoable (a command like rename_item).
-    doc.set_group_execution_order(uids)
+    # Goes through the history manager so that the change is undoable
+    # and marks the document as unsaved. The setter itself sends
+    # job_assembly_invalidated, so the pipeline rebuilds on do and undo.
+    doc.history_manager.execute(
+        SetterCommand(
+            doc,
+            "set_group_execution_order",
+            new_args=(list(uids),),
+            old_args=(list(doc.group_execution_order),),
+            name=_("Change group order"),
+        )
+    )
 
 
 def is_group_order_enabled() -> bool:
