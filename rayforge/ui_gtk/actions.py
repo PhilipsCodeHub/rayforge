@@ -864,7 +864,7 @@ class ActionManager:
     def on_group_action(self, action, param):
         """Handler for the 'group' action."""
         selected_elements = self.win.surface.get_selected_elements()
-        if len(selected_elements) < 2:
+        if not selected_elements:
             return
 
         items_to_group = [

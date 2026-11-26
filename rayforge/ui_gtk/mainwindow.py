@@ -2291,7 +2291,7 @@ class MainWindow(Adw.ApplicationWindow):
         am.get_action("clear").set_enabled(doc.has_workpiece())
 
         # Update sensitivity for Grouping actions
-        can_group = len(selected_elements) >= 2
+        can_group = len(selected_elements) >= 1
         am.get_action("group").set_enabled(can_group)
 
         can_ungroup = any(
