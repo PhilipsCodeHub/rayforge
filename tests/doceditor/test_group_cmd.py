@@ -53,7 +53,9 @@ async def test_group_tags_origin_layer(doc_editor, two_layers_with_items):
 
 
 @pytest.mark.asyncio
-async def test_ungroup_restores_original_layers(doc_editor, two_layers_with_items):
+async def test_ungroup_restores_original_layers(
+    doc_editor, two_layers_with_items
+):
     layer_a, layer_b, item_a, item_b = two_layers_with_items
     world_a = item_a.get_world_transform()
     world_b = item_b.get_world_transform()

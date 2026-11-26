@@ -29,7 +29,9 @@ def _top_groups_by_uid(doc: Doc) -> dict[str, Group]:
     return top_groups
 
 
-def _ordered_uids(listed: list[str], top_groups: dict[str, Group]) -> list[str]:
+def _ordered_uids(
+    listed: list[str], top_groups: dict[str, Group]
+) -> list[str]:
     ordered: list[str] = []
     seen: set[str] = set()
     for uid in listed:
