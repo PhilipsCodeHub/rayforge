@@ -880,9 +880,11 @@ class ActionManager:
         parent_layers = [
             item.get_ancestor_by_type(Layer) for item in items_to_group
         ]
-        if any(pl is None for pl in parent_layers):
-            return
         parent_layer = parent_layers[0]
+        if not isinstance(parent_layer, Layer) or any(
+            pl is None for pl in parent_layers
+        ):
+            return
 
         new_group = self.editor.group.group_items(parent_layer, items_to_group)
         if new_group:

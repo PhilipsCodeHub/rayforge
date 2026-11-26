@@ -2,7 +2,7 @@ import asyncio
 import logging
 from collections import defaultdict
 from gettext import gettext as _
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from raygeo.geo import Matrix
 
@@ -19,6 +19,11 @@ if TYPE_CHECKING:
     from .editor import DocEditor
 
 logger = logging.getLogger(__name__)
+
+
+def _extra(item: DocItem) -> dict[str, Any]:
+    """The ``extra`` dict of a WorkPiece or Group (both declare one)."""
+    return getattr(item, "extra")
 
 
 class _CreateGroupCommand(Command):
@@ -48,7 +53,7 @@ class _CreateGroupCommand(Command):
         # Snapshot the previous origin-layer tags so undo() can restore
         # them exactly (including the "was absent" case).
         self._previous_origin_tags: dict[str, str | None] = {
-            item.uid: item.extra.get(ORIGIN_LAYER_UID)
+            item.uid: _extra(item).get(ORIGIN_LAYER_UID)
             for item in self.items_to_group
         }
         self._precalculated_result = precalculated_result
@@ -70,7 +75,7 @@ class _CreateGroupCommand(Command):
             for item in self.items_to_group:
                 owner = item.get_ancestor_by_type(Layer)
                 if owner is not None:
-                    item.extra[ORIGIN_LAYER_UID] = owner.uid
+                    _extra(item)[ORIGIN_LAYER_UID] = owner.uid
 
             self.new_group = result.new_group
             self.layer.add_child(self.new_group)
@@ -121,9 +126,9 @@ class _CreateGroupCommand(Command):
             for item in self.items_to_group:
                 previous = self._previous_origin_tags.get(item.uid)
                 if previous is None:
-                    item.extra.pop(ORIGIN_LAYER_UID, None)
+                    _extra(item).pop(ORIGIN_LAYER_UID, None)
                 else:
-                    item.extra[ORIGIN_LAYER_UID] = previous
+                    _extra(item)[ORIGIN_LAYER_UID] = previous
 
             # 5. Finally, remove the now-empty group.
             self.layer.remove_child(self.new_group)
@@ -151,7 +156,7 @@ class _UngroupCommand(Command):
         self._previous_tags: dict[str, str | None] = {}
         for group in self.groups_to_ungroup:
             for child in group.children:
-                self._previous_tags[child.uid] = child.extra.get(
+                self._previous_tags[child.uid] = _extra(child).get(
                     ORIGIN_LAYER_UID
                 )
         self._undo_data = []
@@ -248,7 +253,7 @@ class _UngroupCommand(Command):
 
                 # The tag has served its purpose.
                 for child in children_to_move:
-                    child.extra.pop(ORIGIN_LAYER_UID, None)
+                    _extra(child).pop(ORIGIN_LAYER_UID, None)
 
     def undo(self) -> None:
         """Reverts the ungrouping by re-creating the original groups."""
@@ -272,9 +277,9 @@ class _UngroupCommand(Command):
                 for child in children:
                     previous = self._previous_tags.get(child.uid)
                     if previous is None:
-                        child.extra.pop(ORIGIN_LAYER_UID, None)
+                        _extra(child).pop(ORIGIN_LAYER_UID, None)
                     else:
-                        child.extra[ORIGIN_LAYER_UID] = previous
+                        _extra(child)[ORIGIN_LAYER_UID] = previous
 
                 # Restore matrices first
                 group.matrix = data["group_matrix"]
@@ -406,7 +411,7 @@ class GroupCmd:
                         child_targets[child.uid] = parent
                     continue
                 for child in group.children:
-                    uid = child.extra.get(ORIGIN_LAYER_UID)
+                    uid = _extra(child).get(ORIGIN_LAYER_UID)
                     target = parent
                     if uid:
                         origin = self._find_layer_by_uid(uid, parent)
