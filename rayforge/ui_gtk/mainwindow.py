@@ -1556,10 +1556,14 @@ class MainWindow(Adw.ApplicationWindow):
         if mode == RightPanelMode.HIDDEN:
             return []
         if mode == RightPanelMode.NON_EMPTY_LAYERS:
+            wps_by_layer = doc.workpieces_by_layer(
+                get_context().config.group_child_layer_workflow
+            )
             return [
                 layer.workflow
                 for layer in doc.layers
-                if not layer.is_empty and layer.workflow
+                if layer.workflow
+                and (not layer.is_empty or wps_by_layer.get(layer.uid))
             ]
         if mode == RightPanelMode.ALL_LAYERS:
             return [layer.workflow for layer in doc.layers if layer.workflow]
