@@ -67,7 +67,7 @@ def resolve_group_batches(
     top-level groups in doc.group_execution_order, then any top-level
     groups missing from that list (document order), then ungrouped
     workpieces. Stale or duplicate UIDs are ignored. Empty batches
-    are omitted. With use_origin True, 
+    are omitted. With use_origin True,
     grouped workpieces are bucketed by their effective (origin) layer.
     """
     layers = list(doc.layers)

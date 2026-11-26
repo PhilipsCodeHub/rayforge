@@ -10,6 +10,7 @@ from rayforge.pipeline.intent_builder import (
     step_key,
 )
 
+
 def _cross_layer_doc():
     """Group on layer 0 holding one item from layer 0 and one from 1."""
     doc = Doc()

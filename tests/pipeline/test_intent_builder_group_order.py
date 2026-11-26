@@ -11,6 +11,7 @@ from rayforge.pipeline.intent_builder import (
     workpiece_key,
 )
 
+
 class _CommandLikeStep(Step):
     """Minimal geometry-less step (mirrors test_intent_builder_command)."""
 

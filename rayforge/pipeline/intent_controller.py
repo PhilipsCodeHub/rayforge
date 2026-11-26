@@ -278,7 +278,7 @@ class IntentController:
         doc.descendant_removed.disconnect(self._on_doc_changed)
         doc.job_assembly_invalidated.disconnect(self._on_doc_changed)
         get_context().config.changed.disconnect(self._on_config_changed)
-        
+
     def _on_config_changed(self, sender, **kwargs) -> None:
         """Rebuild when a group-related pipeline setting flips."""
         if self._doc is None:
