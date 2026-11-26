@@ -8,6 +8,8 @@ from gi.repository import Gdk, GLib
 from raygeo.geo import Arc, Bezier, Geometry, Line, Matrix, Move
 from raygeo.image.composite import composite_views_into
 
+from ....context import get_context
+from ....core.group import Group, effective_layer
 from ....core.step import Step
 from ....core.workpiece import WorkPiece
 from ....pipeline.artifact import (
@@ -254,10 +256,30 @@ class WorkPieceElement(CanvasElement):
         # Clear the model cache as well, since the data is invalid
         self.data._view_cache.clear()
 
-        if self.data.layer and self.data.layer.workflow:
-            for step in self.data.layer.workflow.steps:
+        layer = self._workflow_layer()
+        if layer and layer.workflow:
+            for step in layer.workflow.steps:
                 self.clear_ops_surface(step.uid)
         super().trigger_update()
+
+    def _workflow_layer(self):
+        """
+        Returns the layer whose workflow applies to this workpiece.
+
+        With "Use each item's own layer workflow in groups" on, an
+        item inside a group uses the layer it came from before it was
+        grouped. Otherwise it is the layer the item sits under.
+        """
+        layer = self.data.layer
+        if not get_context().config.group_child_layer_workflow:
+            return layer
+        if not isinstance(self.data.parent, Group):
+            return layer
+        doc = self.data.doc
+        if doc is None:
+            return layer
+        by_uid = {lyr.uid: lyr for lyr in doc.layers}
+        return effective_layer(self.data, by_uid) or layer
 
     def trigger_view_update(self, ppm: float = 0.0) -> bool:
         """
@@ -418,7 +440,8 @@ class WorkPieceElement(CanvasElement):
 
         Called from ``draw()`` when ``_composited_dirty`` is True.
         """
-        if not self.data.layer or not self.data.layer.workflow:
+        layer = self._workflow_layer()
+        if not layer or not layer.workflow:
             self._dispose_composited()
             self._composited_dirty = False
             return
@@ -436,7 +459,7 @@ class WorkPieceElement(CanvasElement):
             return
 
         visible_steps = []
-        for step in self.data.layer.workflow.steps:
+        for step in layer.workflow.steps:
             if not self._ops_visibility.get(step.uid, True):
                 continue
             if step.uid not in self._ops_surface_cache:
@@ -1408,7 +1431,8 @@ class WorkPieceElement(CanvasElement):
         if world_w < 1e-9 or world_h < 1e-9:
             return
 
-        if self.data.layer and self.data.layer.workflow:
+        layer = self._workflow_layer()
+        if layer and layer.workflow:
             registry.touch(self.data.uid)
 
             if self._composited_dirty:
