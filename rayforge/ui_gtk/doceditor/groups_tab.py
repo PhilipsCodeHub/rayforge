@@ -190,7 +190,7 @@ def set_group_name(editor: "DocEditor", group: Group, name: str):
 def set_group_visible(editor: "DocEditor", group: Group, visible: bool):
     # TODO: replace with an undoable command, like
     # editor.layer.set_layer_visibility, once groups can be hidden.
-    group.visible = visible
+    setattr(group, "visible", visible)
 
 
 def set_group_order(doc: Doc, uids: list[str]):
