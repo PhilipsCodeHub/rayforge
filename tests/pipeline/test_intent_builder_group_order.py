@@ -41,7 +41,9 @@ def test_on_command_step_runs_first_in_layers_first_slot(isolated_machine):
     doc, step, (ga, gb), _wps = _make_doc()
     cmd = _CommandLikeStep()
     # Added after the geometry step, so its workflow position is last.
-    doc.active_layer.workflow.add_child(cmd)
+    workflow = doc.active_layer.workflow
+    assert workflow is not None
+    workflow.add_child(cmd)
 
     job = _job_node(isolated_machine, doc)
     assert _group_input_keys(job) == [
@@ -54,7 +56,9 @@ def test_on_command_step_runs_first_in_layers_first_slot(isolated_machine):
 def test_on_command_step_appears_exactly_once(isolated_machine):
     doc, _step, _groups, _wps = _make_doc()
     cmd = _CommandLikeStep()
-    doc.active_layer.workflow.add_child(cmd)
+    workflow = doc.active_layer.workflow
+    assert workflow is not None
+    workflow.add_child(cmd)
 
     job = _job_node(isolated_machine, doc)
     flat = [k for keys in _group_input_keys(job) for k in keys]

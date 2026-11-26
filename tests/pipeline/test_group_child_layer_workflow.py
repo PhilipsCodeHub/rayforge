@@ -160,6 +160,7 @@ class _Step(Step):
 def _doc_with_steps():
     """Cross-layer group; layer A and layer B each have one step."""
     doc, la, lb, group, _wp_a, _wp_b = _cross_layer_doc()
+    assert la.workflow is not None and lb.workflow is not None
     step_a, step_b = _Step("sa"), _Step("sb")
     la.workflow.add_child(step_a)
     lb.workflow.add_child(step_b)
