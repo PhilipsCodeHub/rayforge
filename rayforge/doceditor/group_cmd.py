@@ -259,7 +259,7 @@ class _UngroupCommand(Command):
         """Reverts the ungrouping by re-creating the original groups."""
         with self.pipeline.paused():
             for data in reversed(self._undo_data):
-                parent = data["parent"]
+                parent: DocItem = data["parent"]
                 group_index = data["group_index"]
                 children = data["children"]
                 group = next(
