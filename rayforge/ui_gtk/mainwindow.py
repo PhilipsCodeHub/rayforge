@@ -18,6 +18,7 @@ from ..core.group import Group
 from ..core.item import DocItem
 from ..core.registration import call_registration_hooks
 from ..core.undo import Command, HistoryManager
+from ..core.workpiece import WorkPiece
 from ..doceditor.editor import DocEditor
 from ..machine.cmd import MachineCmd
 from ..machine.driver import find_driver_cls
@@ -2291,7 +2292,10 @@ class MainWindow(Adw.ApplicationWindow):
         am.get_action("clear").set_enabled(doc.has_workpiece())
 
         # Update sensitivity for Grouping actions
-        can_group = len(selected_elements) >= 2
+        can_group = any(
+            isinstance(elem.data, (WorkPiece, Group))
+            for elem in selected_elements
+        )
         am.get_action("group").set_enabled(can_group)
 
         can_ungroup = any(
