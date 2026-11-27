@@ -867,11 +867,13 @@ class ActionManager:
         if not selected_elements:
             return
 
-        items_to_group = [
+        items_to_group: list[DocItem] = [
             elem.data
             for elem in selected_elements
-            if isinstance(elem.data, DocItem)
+            if isinstance(elem.data, (WorkPiece, Group))
         ]
+        if not items_to_group:
+            return
 
         # Resolve every selected item's owning Layer. Cross-layer grouping
         # is permitted here; the new group is placed on the first item's
