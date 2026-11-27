@@ -562,6 +562,7 @@ class ViewManager:
         source_handle: WorkPieceArtifactHandle,
         step_uid: str,
         workpiece_uid: str,
+        drain: bool = True,
     ):
         """
         Internal method to request a view render.
@@ -593,7 +594,8 @@ class ViewManager:
         ):
             logger.debug(f"View for ({workpiece_uid}, {step_uid}) is valid.")
             self._render_semaphore.release()
-            self._drain_pending_render_queue()
+            if drain:
+                self._drain_pending_render_queue()
             return
 
         self._current_view_context = context
@@ -696,6 +698,7 @@ class ViewManager:
                 source_handle,
                 step_uid,
                 workpiece_uid,
+                drain=False,
             )
 
     def shutdown(self):
