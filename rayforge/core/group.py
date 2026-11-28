@@ -24,6 +24,28 @@ logger = logging.getLogger(__name__)
 ORIGIN_LAYER_UID = "origin_layer_uid"
 
 
+def remap_origin_layers(
+    items: Sequence[DocItem], uid_map: dict[str, str]
+) -> None:
+    """
+    Rewrites origin-layer tags of the given items and all their
+    descendants. ``uid_map`` maps an old layer uid to its replacement.
+
+    An import creates temporary Layers; when it maps them onto existing
+    document layers, tags pointing to the temporary ones must follow.
+    """
+    if not uid_map:
+        return
+    for root in items:
+        for item in [root, *root.get_descendants()]:
+            extra = getattr(item, "extra", None)
+            if not isinstance(extra, dict):
+                continue
+            old = extra.get(ORIGIN_LAYER_UID)
+            if old in uid_map:
+                extra[ORIGIN_LAYER_UID] = uid_map[old]
+
+
 def effective_layer(
     item: DocItem, layers_by_uid: dict[str, Layer]
 ) -> Layer | None:

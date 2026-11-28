@@ -26,6 +26,7 @@ from raygeo.ops.state import CoolantMode
 
 from ..context import get_context
 from ..core.doc import Doc
+from ..core.group import remap_origin_layers
 from ..core.item import DocItem
 from ..core.layer import Layer
 from ..core.source_asset import SourceAsset
@@ -607,6 +608,16 @@ class FileCmd:
 
         Returns the list of destination layers that received items.
         """
+        if mode == LayerImportMode.MAP_TO_EXISTING:
+            existing = self._editor.doc.layers
+            remap_origin_layers(
+                items,
+                {
+                    item.uid: existing[idx].uid
+                    for idx, item in enumerate(items)
+                    if isinstance(item, Layer) and idx < len(existing)
+                },
+            )
         pairs = self._resolve_destinations(items, mode, target_layer)
         renames = self._plan_layer_renames(
             items, mode, self._editor.doc.layers
