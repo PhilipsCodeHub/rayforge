@@ -92,6 +92,7 @@ class PassthroughSpec(VectorizationSpec):
     flatten_z: bool = True
     repair_outlines: bool = False
     repair_tolerance_mm: float | None = None
+    blocks_as_groups: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -104,6 +105,7 @@ class PassthroughSpec(VectorizationSpec):
             "flatten_z": self.flatten_z,
             "repair_outlines": self.repair_outlines,
             "repair_tolerance_mm": self.repair_tolerance_mm,
+            "blocks_as_groups": self.blocks_as_groups,
             "ppi": self.ppi,
         }
 
@@ -133,6 +135,7 @@ class PassthroughSpec(VectorizationSpec):
             flatten_z=data.get("flatten_z", True),
             repair_outlines=data.get("repair_outlines", False),
             repair_tolerance_mm=data.get("repair_tolerance_mm"),
+            blocks_as_groups=data.get("blocks_as_groups", False),
             ppi=data.get("ppi", 96.0),
         )
 
