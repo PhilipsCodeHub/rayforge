@@ -14,12 +14,17 @@ from raygeo.formats.dxf.reader import (
 from raygeo.geo import Geometry
 from raygeo.geo.types import Rect
 
+from ...core.color import pick_unused_color
+from ...core.group import ORIGIN_LAYER_UID, Group
+from ...core.item import DocItem
+from ...core.layer import Layer
 from ...core.source_asset import SourceAsset
 from ...core.vectorization_spec import (
     LayerImportMode,
     PassthroughSpec,
     VectorizationSpec,
 )
+from ...core.workpiece import WorkPiece
 from ...image.geo_renderer import render_geometry_to_png
 from ..base_importer import (
     Importer,
@@ -28,6 +33,7 @@ from ..base_importer import (
 from ..engine import NormalizationEngine
 from ..structures import (
     ImportManifest,
+    ImportPayload,
     LayerGeometry,
     LayerInfo,
     ParsingResult,
@@ -361,6 +367,96 @@ class DxfImporter(Importer):
                 )
             )
         return layers
+
+    @staticmethod
+    def _segment_key(item: DocItem) -> str | None:
+        if isinstance(item, WorkPiece) and item.source_segment:
+            return item.source_segment.layer_id
+        return None
+
+    def _post_process_payload(self, payload: ImportPayload) -> ImportPayload:
+        """Turns the block parts into one Group per INSERT.
+
+        Each part's WorkPiece leaves the one-layer wrapper the assembler
+        gave it and joins the Group of its INSERT, which sits in the Layer
+        of the INSERT's own DXF layer. Children from another DXF layer
+        remember that layer in ORIGIN_LAYER_UID.
+        """
+        if not self._block_parts:
+            return payload
+        parts = {part.key: part for part in self._block_parts}
+
+        kept: list[DocItem] = []
+        part_items: dict[str, WorkPiece] = {}
+        for item in payload.items:
+            if isinstance(item, Layer):
+                content = item.get_content_items()
+            else:
+                content = [item]
+            found: tuple[str, WorkPiece] | None = None
+            for child in content:
+                key = self._segment_key(child)
+                if (
+                    key is not None
+                    and key in parts
+                    and isinstance(child, WorkPiece)
+                ):
+                    found = (key, child)
+                    break
+            if found is None:
+                kept.append(item)
+            else:
+                part_items[found[0]] = found[1]
+
+        layers_by_name: dict[str, Layer] = {
+            item.name: item for item in kept if isinstance(item, Layer)
+        }
+        used_colors = {layer.color for layer in layers_by_name.values()}
+        created: list[Layer] = []
+
+        def layer_for(name: str) -> Layer:
+            layer = layers_by_name.get(name)
+            if layer is None:
+                layer = Layer(name=name)
+                layer.set_color(pick_unused_color(used_colors))
+                used_colors.add(layer.color)
+                layers_by_name[name] = layer
+                created.append(layer)
+            return layer
+
+        by_insert: dict[int, list[BlockPart]] = {}
+        for part in self._block_parts:
+            if part.key in part_items:
+                by_insert.setdefault(part.insert_index, []).append(part)
+
+        name_counts: dict[str, int] = {}
+        for index in sorted(by_insert):
+            insert_parts = by_insert[index]
+            host = layer_for(insert_parts[0].host_layer)
+            workpieces = [part_items[p.key] for p in insert_parts]
+            members: list[DocItem] = list(workpieces)
+            grouping = Group.create_from_items(members, host)
+            if grouping is None:
+                continue
+            for part in insert_parts:
+                if part.source_layer != part.host_layer:
+                    origin = layer_for(part.source_layer)
+                    part_items[part.key].extra[ORIGIN_LAYER_UID] = origin.uid
+
+            base = insert_parts[0].block_name
+            count = name_counts.get(base, 0) + 1
+            name_counts[base] = count
+            group = grouping.new_group
+            group.name = base if count == 1 else f"{base} ({count})"
+            host.add_child(group)
+            for wp in workpieces:
+                if wp.parent:
+                    wp.parent.remove_child(wp)
+            group.add_children(members)
+            for wp in workpieces:
+                wp.matrix = grouping.child_matrices[wp.uid]
+
+        return replace(payload, items=[*kept, *created])
 
     def _calculate_geometry_union(
         self, geometries: Iterable[Geometry]
