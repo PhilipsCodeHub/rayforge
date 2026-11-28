@@ -257,7 +257,10 @@ class NormalizationEngine:
         target_layers: list[LayerGeometry] = result.layers
         if active_layers:
             target_layers = [
-                geo for geo in result.layers if geo.layer_id in active_layers
+                geo
+                for geo in result.layers
+                if geo.layer_id in active_layers
+                or geo.source_layer_id in active_layers
             ]
 
         if not target_layers:

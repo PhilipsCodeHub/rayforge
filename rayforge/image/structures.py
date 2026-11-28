@@ -117,12 +117,16 @@ class LayerGeometry:
                         the geometric bounding box.
         color: Optional hex color string (e.g. "#ff0000") associated with
                this layer. Used by color-based layer sources.
+        source_layer_id: Optional id of the file layer this entry was
+               split from. Lets the layout engine keep a derived entry
+               when only its source layer is active.
     """
 
     layer_id: str
     name: str
     content_bounds: Rect
     color: str | None = None
+    source_layer_id: str | None = None
 
 
 @dataclass
