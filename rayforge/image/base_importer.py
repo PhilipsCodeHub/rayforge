@@ -39,6 +39,7 @@ class ImporterFeature(enum.Flag):
     PROCEDURAL_GENERATION = enum.auto()
     Z_FLATTENING = enum.auto()
     GEOMETRY_REPAIR = enum.auto()
+    BLOCK_GROUPS = enum.auto()
 
 
 class Importer(ABC):

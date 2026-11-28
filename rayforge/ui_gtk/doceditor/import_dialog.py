@@ -261,6 +261,23 @@ class ImportDialog(PatchedDialogWindow):
         self.repair_switch.connect("notify::active", self._on_repair_toggled)
         self.repair_group.add(self.repair_switch)
 
+        self.blocks_group = Adw.PreferencesGroup(title=_("Blocks"))
+        self.blocks_group.set_visible(False)
+        preferences_page.add(self.blocks_group)
+
+        self.blocks_switch = Adw.SwitchRow(
+            title=_("Import Blocks as Groups"),
+            subtitle=_(
+                "Keep each block insertion together as one group"
+            ),
+            active=False,
+        )
+        self.blocks_switch.connect(
+            "notify::active",
+            lambda *args: self._schedule_preview_update(),
+        )
+        self.blocks_group.add(self.blocks_switch)
+
         self.repair_tolerance_row = SpinRow(
             _("Join Gap"),
             _(
@@ -389,6 +406,7 @@ class ImportDialog(PatchedDialogWindow):
         self.layers_group.set_sensitive(is_direct_import)
         self.flatten_z_switch.set_sensitive(is_direct_import)
         self.repair_group.set_sensitive(is_direct_import)
+        self.blocks_group.set_sensitive(is_direct_import)
         self._update_z_flatten_banner(is_direct_import)
         self.warning_banner.set_revealed(False)
         self._schedule_preview_update()
@@ -486,6 +504,8 @@ class ImportDialog(PatchedDialogWindow):
             # user decides whether their export is fragmented.
             if ImporterFeature.GEOMETRY_REPAIR in self.features:
                 self.repair_group.set_visible(True)
+            if ImporterFeature.BLOCK_GROUPS in self.features:
+                self.blocks_group.set_visible(True)
             # Default to color grouping when the user has not picked a
             # layer source yet and the file has distinct colors but no
             # useful layer structure (no layers, or a single generic
@@ -656,6 +676,7 @@ class ImportDialog(PatchedDialogWindow):
                 flatten_z=self.flatten_z_switch.get_active(),
                 repair_outlines=self.repair_switch.get_active(),
                 repair_tolerance_mm=self._repair_tolerance_mm(),
+                blocks_as_groups=self.blocks_switch.get_active(),
                 ppi=ppi,
             )
         else:
@@ -697,6 +718,7 @@ class ImportDialog(PatchedDialogWindow):
                 self.layer_import_mode_row.set_selected(idx)
                 self.flatten_z_switch.set_active(spec.flatten_z)
                 self.repair_switch.set_active(spec.repair_outlines)
+                self.blocks_switch.set_active(spec.blocks_as_groups)
                 if spec.repair_tolerance_mm is not None:
                     self.repair_tolerance_row.set_value(
                         spec.repair_tolerance_mm

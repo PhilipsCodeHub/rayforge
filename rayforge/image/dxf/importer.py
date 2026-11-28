@@ -85,6 +85,7 @@ class DxfImporter(Importer):
         ImporterFeature.LAYER_SELECTION,
         ImporterFeature.Z_FLATTENING,
         ImporterFeature.GEOMETRY_REPAIR,
+        ImporterFeature.BLOCK_GROUPS,
     }
 
     def __init__(self, data: bytes, source_file: Path | None = None):
