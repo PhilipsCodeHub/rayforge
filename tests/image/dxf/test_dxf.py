@@ -189,6 +189,7 @@ class TestDXFImporterContract:
             ImporterFeature.LAYER_SELECTION,
             ImporterFeature.Z_FLATTENING,
             ImporterFeature.GEOMETRY_REPAIR,
+            ImporterFeature.BLOCK_GROUPS,
         }
 
     def test_scan_returns_manifest(self, line_dxf_importer):
