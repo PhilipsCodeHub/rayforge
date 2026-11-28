@@ -1,12 +1,16 @@
 import logging
 import math
 from collections.abc import Iterable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from gettext import gettext as _
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
 
-from raygeo.formats.dxf.reader import ReadOutput, read
+from raygeo.formats.dxf.reader import (
+    ReadOutput,
+    read,
+    read_with_inserts,
+)
 from raygeo.geo import Geometry
 from raygeo.geo.types import Rect
 
@@ -55,6 +59,17 @@ DEFAULT_LAYER = "0"
 HIDDEN_LAYER = "defpoints"
 
 
+@dataclass
+class BlockPart:
+    """One DXF layer's share of one INSERT, imported as a part."""
+
+    key: str
+    block_name: str
+    insert_index: int
+    host_layer: str
+    source_layer: str
+
+
 class DxfImporter(Importer):
     label = "DXF files (2D)"
     mime_types = ("image/vnd.dxf",)
@@ -70,6 +85,8 @@ class DxfImporter(Importer):
         super().__init__(data, source_file)
         self._read_output: ReadOutput | None = None
         self._geometries_by_layer: dict[str | None, Geometry] = {}
+        self._structure: Any = None
+        self._block_parts: list[BlockPart] = []
 
     def _read_document(self) -> ReadOutput | None:
         """Reads the file once, caching the result between the phases."""
@@ -200,6 +217,19 @@ class DxfImporter(Importer):
         else:
             geometries_to_process = self._geometries_by_layer
 
+        self._block_parts = []
+        block_geometries: dict[str | None, Geometry] | None = None
+        if (
+            isinstance(spec, PassthroughSpec)
+            and spec.blocks_as_groups
+            and split_layers
+        ):
+            block_geometries = self._block_geometries(
+                parse_result, active_layers_set
+            )
+        if block_geometries is not None:
+            geometries_to_process = block_geometries
+
         final_geometries: dict[str | None, Geometry]
         if split_layers:
             # For a "split" strategy, return the dictionary of individual
@@ -246,10 +276,91 @@ class DxfImporter(Importer):
                     parse_result, union_bounds
                 )
 
+        if block_geometries is not None:
+            final_parse_result = replace(
+                final_parse_result,
+                layers=self._block_layers(final_geometries),
+            )
+
         return VectorizationResult(
             geometries_by_layer=final_geometries,
             source_parse_result=final_parse_result,
         )
+
+    def _read_with_inserts(self) -> Any:
+        """Reads the file with its INSERT structure, once."""
+        if self._structure is not None:
+            return self._structure
+        data_str = self.raw_data.decode("utf-8", errors="replace")
+        try:
+            self._structure = read_with_inserts(data_str)
+        except Exception as e:
+            logger.warning(f"DXF block read failed: {e}")
+            self.add_warning(
+                _("DXF blocks could not be read as groups: {}").format(e)
+            )
+            return None
+        return self._structure
+
+    def _block_geometries(
+        self,
+        parse_result: ParsingResult,
+        active_layers: set[str] | None,
+    ) -> dict[str | None, Geometry] | None:
+        """Splits the drawing into loose layers and one part per INSERT.
+
+        Returns None when the file has no INSERT, so the caller keeps the
+        normal flat result.
+        """
+        structure = self._read_with_inserts()
+        if structure is None or not structure.inserts:
+            return None
+
+        def is_active(name: str) -> bool:
+            return not active_layers or name in active_layers
+
+        geometries: dict[str | None, Geometry] = {}
+        for name, geo in structure.standalone_layers:
+            if is_active(name) and not geo.is_empty():
+                geometries[name] = geo.copy()
+        for index, insert in enumerate(structure.inserts):
+            for name, geo in insert.layers:
+                if not is_active(name) or geo.is_empty():
+                    continue
+                key = f"block:{index}:{name}"
+                geometries[key] = geo.copy()
+                self._block_parts.append(
+                    BlockPart(
+                        key=key,
+                        block_name=insert.block_name,
+                        insert_index=index,
+                        host_layer=insert.layer,
+                        source_layer=name,
+                    )
+                )
+        self._close_gaps(geometries, parse_result.document_bounds)
+        return geometries
+
+    def _block_layers(
+        self, geometries: dict[str | None, Geometry]
+    ) -> list[LayerGeometry]:
+        """Layer entries for the layout engine, one per geometry."""
+        parts = {part.key: part for part in self._block_parts}
+        layers: list[LayerGeometry] = []
+        for key, geo in geometries.items():
+            if key is None or geo.is_empty():
+                continue
+            gx1, gy1, gx2, gy2 = geo.rect()
+            part = parts.get(key)
+            layers.append(
+                LayerGeometry(
+                    layer_id=key,
+                    name=part.block_name if part else key,
+                    content_bounds=(gx1, gy1, gx2 - gx1, gy2 - gy1),
+                    source_layer_id=part.source_layer if part else None,
+                )
+            )
+        return layers
 
     def _calculate_geometry_union(
         self, geometries: Iterable[Geometry]
